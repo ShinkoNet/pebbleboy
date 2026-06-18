@@ -27,7 +27,7 @@ typedef enum {
 } PbCartMode;
 
 typedef bool (*PbCartBankRequestCb)(uint16_t bank, uint16_t offset, uint16_t size,
-                                    void *context);
+                                    bool demand, void *context);
 
 typedef struct {
   uint32_t hits;
@@ -94,6 +94,7 @@ bool pb_cart_ensure_addr(PbCart *cart, uint32_t addr);
 bool pb_cart_ensure_bank(PbCart *cart, uint16_t bank);
 bool pb_cart_ensure_fixed_bank(PbCart *cart);
 bool pb_cart_has_bank(const PbCart *cart, uint16_t bank);
+bool pb_cart_prefetch_addr(PbCart *cart, uint32_t addr);
 void pb_cart_set_active_bank(PbCart *cart, uint16_t bank);
 bool pb_cart_paused(const PbCart *cart);
 bool pb_cart_read_faulted(const PbCart *cart);

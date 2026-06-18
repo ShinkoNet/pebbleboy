@@ -39,6 +39,7 @@ def main():
     parser.add_argument("--expect-phone-request-count", type=int)
     parser.add_argument("--expect-phone-request-size", type=int)
     parser.add_argument("--expect-phone-latencies", action="store_true")
+    parser.add_argument("--allow-pending-phone-request", action="store_true")
     parser.add_argument("--max-phone-latency-ms", type=int)
     args = parser.parse_args()
 
@@ -130,10 +131,12 @@ def main():
                 f"saw {bank_set(phone_request_sizes)}"
             )
     if args.expect_phone_latencies and len(phone_latencies) != len(phone_requests):
-        return fail(
-            f"expected one phone latency per request; saw "
-            f"{len(phone_latencies)} latencies for {len(phone_requests)} requests"
-        )
+        pending = len(phone_requests) - len(phone_latencies)
+        if not (args.allow_pending_phone_request and pending == 1):
+            return fail(
+                f"expected one phone latency per request; saw "
+                f"{len(phone_latencies)} latencies for {len(phone_requests)} requests"
+            )
     if args.max_phone_latency_ms is not None:
         bad_latencies = [value for value in phone_latencies if value > args.max_phone_latency_ms]
         if bad_latencies:

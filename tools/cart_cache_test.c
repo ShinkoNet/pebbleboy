@@ -2,8 +2,17 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "gb_cart.h"
+
+typedef struct {
+  uint16_t bank;
+  uint16_t offset;
+  uint16_t size;
+  bool demand;
+  unsigned count;
+} RequestCapture;
 
 static void expect(bool condition, const char *message) {
   if (!condition) {
@@ -12,11 +21,22 @@ static void expect(bool condition, const char *message) {
   }
 }
 
+static bool capture_request(uint16_t bank, uint16_t offset, uint16_t size,
+                            bool demand, void *context) {
+  RequestCapture *capture = context;
+  capture->bank = bank;
+  capture->offset = offset;
+  capture->size = size;
+  capture->demand = demand;
+  capture->count++;
+  return true;
+}
+
 static uint8_t line_pattern(uint16_t bank, uint16_t line) {
   return (uint8_t)(0x40u | ((bank & 0x0Fu) << 2) | (line & 0x03u));
 }
 
-int main(void) {
+static void test_active_bank_retention(void) {
   const uint16_t bank_count = 8;
   const size_t rom_size = (size_t)bank_count * PB_CART_BANK_SIZE;
   uint8_t *rom = malloc(rom_size);
@@ -61,5 +81,43 @@ int main(void) {
          (unsigned long)pb_cart_stats(&cart)->loads,
          (unsigned long)pb_cart_stats(&cart)->hits,
          (unsigned long)pb_cart_stats(&cart)->misses);
+}
+
+static void test_phone_prefetch(void) {
+  PbCart cart;
+  RequestCapture capture = {0};
+  expect(pb_cart_init_phone(&cart, 8u * PB_CART_BANK_SIZE, capture_request, &capture),
+         "phone cart init failed");
+
+  uint32_t addr = PB_CART_BANK_SIZE + PB_CART_LINE_SIZE;
+  expect(pb_cart_prefetch_addr(&cart, addr), "phone prefetch did not start");
+  expect(capture.count == 1, "prefetch request count mismatch");
+  expect(capture.bank == 1 && capture.offset == PB_CART_LINE_SIZE &&
+         capture.size == PB_CART_LINE_SIZE, "prefetch request range mismatch");
+  expect(!capture.demand, "prefetch was marked as demand");
+  expect(!pb_cart_paused(&cart), "prefetch paused the cart");
+
+  expect(!pb_cart_ensure_addr(&cart, addr), "loading prefetch unexpectedly satisfied demand");
+  expect(pb_cart_paused(&cart), "demand for loading prefetch did not pause");
+  expect(capture.count == 1, "loading prefetch issued duplicate demand request");
+
+  uint8_t *line = malloc(PB_CART_LINE_SIZE);
+  expect(line != NULL, "prefetch line allocation failed");
+  memset(line, 0x5A, PB_CART_LINE_SIZE);
+  expect(pb_cart_phone_begin(&cart, capture.bank, capture.offset, capture.size),
+         "prefetch begin failed");
+  expect(pb_cart_phone_data(&cart, capture.bank, capture.offset, line, capture.size),
+         "prefetch data failed");
+  expect(pb_cart_phone_end(&cart, capture.bank, capture.offset, capture.size),
+         "prefetch end failed");
+  expect(!pb_cart_paused(&cart), "prefetch completion did not resume demand");
+  expect(pb_cart_read(&cart, addr) == 0x5A, "prefetched line readback failed");
+  free(line);
+  printf("cart cache phone-prefetch test passed requests=%u\n", capture.count);
+}
+
+int main(void) {
+  test_active_bank_retention();
+  test_phone_prefetch();
   return 0;
 }

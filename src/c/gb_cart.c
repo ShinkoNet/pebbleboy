@@ -286,7 +286,7 @@ static void prv_prepare_loading_fill(PbCart *cart, uint32_t start, uint16_t fill
   }
 }
 
-static bool prv_request_phone_fill(PbCart *cart, uint32_t requested_start) {
+static bool prv_request_phone_fill(PbCart *cart, uint32_t requested_start, bool demand) {
   uint32_t line_start = prv_slot_start(requested_start);
   uint32_t start = prv_fill_start(cart, line_start);
   uint16_t bank = prv_slot_bank(start);
@@ -294,23 +294,28 @@ static bool prv_request_phone_fill(PbCart *cart, uint32_t requested_start) {
   uint16_t size = prv_fill_size(cart, start);
   PbCartSlot *slot = prv_find_slot(cart, line_start);
   if (slot && slot->loading) {
-    cart->paused = true;
-    cart->pending_start = line_start;
-    return true;
+    if (demand) {
+      cart->paused = true;
+      cart->pending_start = line_start;
+      return true;
+    }
+    return false;
   }
 
-  if (!cart->request_cb ||
-      !cart->request_cb(bank, offset, size, cart->request_context)) {
+  if (prv_has_loading_slots(cart) || !cart->request_cb ||
+      !cart->request_cb(bank, offset, size, demand, cart->request_context)) {
     return false;
   }
 
   prv_prepare_loading_fill(cart, start, size);
-  cart->paused = true;
-  cart->pending_start = line_start;
+  if (demand) {
+    cart->paused = true;
+    cart->pending_start = line_start;
+  }
   cart->stats.phone_requests++;
   prv_note_bank(&cart->stats.request_bank_mask, bank);
-  PB_LOG("phone request bank %u fill %u size=%u", (unsigned)bank,
-         (unsigned)offset, (unsigned)size);
+  PB_LOG("phone request bank %u fill %u size=%u%s", (unsigned)bank,
+         (unsigned)offset, (unsigned)size, demand ? "" : " prefetch");
   return true;
 }
 
@@ -330,7 +335,7 @@ bool pb_cart_ensure_addr(PbCart *cart, uint32_t addr) {
   cart->stats.misses++;
   cart->stats.last_miss_bank = bank;
   if (cart->mode == PB_CART_MODE_PHONE) {
-    prv_request_phone_fill(cart, start);
+    prv_request_phone_fill(cart, start, true);
     return false;
   }
   return prv_load_fill(cart, start);
@@ -374,7 +379,7 @@ uint8_t pb_cart_read(PbCart *cart, uint32_t addr) {
     if (cart->mode == PB_CART_MODE_PHONE) {
       cart->read_faulted = true;
       cart->read_fault_start = start;
-      prv_request_phone_fill(cart, start);
+      prv_request_phone_fill(cart, start, true);
       return 0xFF;
     }
     if (!prv_load_fill(cart, start)) {
@@ -395,6 +400,18 @@ bool pb_cart_has_bank(const PbCart *cart, uint16_t bank) {
   uint32_t start = (uint32_t)bank * PB_CART_BANK_SIZE;
   const PbCartSlot *slot = prv_find_const_slot(cart, start);
   return slot && slot->valid;
+}
+
+bool pb_cart_prefetch_addr(PbCart *cart, uint32_t addr) {
+  if (cart->mode != PB_CART_MODE_PHONE || addr >= cart->rom_size) {
+    return false;
+  }
+  uint32_t start = prv_slot_start(addr);
+  const PbCartSlot *slot = prv_find_const_slot(cart, start);
+  if (slot && (slot->valid || slot->loading)) {
+    return false;
+  }
+  return prv_request_phone_fill(cart, start, false);
 }
 
 void pb_cart_set_active_bank(PbCart *cart, uint16_t bank) {

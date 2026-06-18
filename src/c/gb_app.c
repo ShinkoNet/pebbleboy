@@ -378,8 +378,11 @@ static bool prv_start_from_cart(const char *source_name) {
 }
 
 static bool prv_request_phone_bank(uint16_t bank, uint16_t offset, uint16_t size,
-                                   void *context) {
+                                   bool demand, void *context) {
   (void)context;
+  if (s_phone_bank_load_pending) {
+    return false;
+  }
   uint64_t started_ms = prv_now_ms();
   if (gb_phone_request_bank(bank, offset, size)) {
     s_phone_bank_load_pending = true;
@@ -387,8 +390,10 @@ static bool prv_request_phone_bank(uint16_t bank, uint16_t offset, uint16_t size
     s_phone_bank_load_offset = offset;
     s_phone_bank_load_size = size;
     s_phone_bank_load_ms = started_ms;
-    snprintf(s_status, sizeof(s_status), "Loading bank %u", bank);
-    layer_mark_dirty(s_canvas);
+    if (demand) {
+      snprintf(s_status, sizeof(s_status), "Loading bank %u", bank);
+      layer_mark_dirty(s_canvas);
+    }
     return true;
   }
   APP_LOG(APP_LOG_LEVEL_WARNING, "phone request busy for bank %u fill %u",
@@ -448,6 +453,23 @@ static void prv_maybe_flush_cart_ram(uint64_t now) {
   }
 }
 
+static void prv_maybe_prefetch_next_phone_fill(const PbPhoneEvent *event) {
+  if (!s_running || !s_cart || s_cart->mode != PB_CART_MODE_PHONE ||
+      pb_cart_paused(s_cart) || s_cart_ram_paused || s_phone_bank_load_pending) {
+    return;
+  }
+  if (event->bank != s_cart->active_bank || event->size >= PB_CART_BANK_SIZE) {
+    return;
+  }
+
+  uint32_t next_offset = (uint32_t)event->offset + event->size;
+  if (next_offset >= PB_CART_BANK_SIZE) {
+    return;
+  }
+  uint32_t addr = (uint32_t)event->bank * PB_CART_BANK_SIZE + next_offset;
+  pb_cart_prefetch_addr(s_cart, addr);
+}
+
 static void prv_phone_event(const PbPhoneEvent *event, void *context) {
   (void)context;
   switch (event->type) {
@@ -490,6 +512,7 @@ static void prv_phone_event(const PbPhoneEvent *event, void *context) {
         prv_set_status("Resumed");
         prv_schedule_frame_timer(1);
       }
+      prv_maybe_prefetch_next_phone_fill(event);
       break;
     case PB_PHONE_EVENT_SRAM_LOAD_DATA:
       if (s_cart_ram && s_cart_ram_loading && event->bank == s_cart_ram_loading_bank &&
