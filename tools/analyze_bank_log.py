@@ -7,7 +7,7 @@ import re
 import sys
 
 
-LOAD_RE = re.compile(r"cart: (resource|memory|phone) bank (\d+) loaded")
+LOAD_RE = re.compile(r"cart: (resource|memory|phone) bank (\d+)(?: (?:page|fill) \d+)? loaded")
 PHONE_REQUEST_RE = re.compile(r"cart: phone request bank (\d+)")
 
 

@@ -30,6 +30,33 @@ static uint64_t s_last_log_ms;
 static uint32_t s_last_log_frame;
 static uint64_t s_last_phone_info_request_ms;
 
+typedef struct {
+  bool gb_halt;
+  bool gb_ime;
+  bool gb_frame;
+  bool lcd_blank;
+  bool cart_is_mbc3O;
+  int8_t mbc;
+  uint8_t cart_ram;
+  uint16_t num_rom_banks_mask;
+  uint8_t num_ram_banks;
+  uint16_t selected_rom_bank;
+  uint8_t cart_ram_bank;
+  uint8_t enable_cart_ram;
+  uint8_t cart_mode_select;
+  struct cpu_registers_s cpu_reg;
+  struct count_s counter;
+  uint8_t hram_io[HRAM_IO_SIZE];
+  uint8_t bg_palette[4];
+  uint8_t sp_palette[8];
+  uint8_t window_clear;
+  uint8_t WY;
+  bool frame_skip_count;
+  bool interlace_count;
+} PbGbFrameCheckpoint;
+
+static PbGbFrameCheckpoint s_frame_checkpoint;
+
 static void prv_frame_timer_cb(void *data);
 static void prv_schedule_frame_timer(uint32_t delay_ms);
 
@@ -79,6 +106,60 @@ static void prv_lcd_draw_line(struct gb_s *gb, const uint8_t *pixels, const uint
   pb_video_draw_line(pixels, (uint8_t)line);
 }
 
+static void prv_save_frame_checkpoint(void) {
+  s_frame_checkpoint.gb_halt = s_gb->gb_halt;
+  s_frame_checkpoint.gb_ime = s_gb->gb_ime;
+  s_frame_checkpoint.gb_frame = s_gb->gb_frame;
+  s_frame_checkpoint.lcd_blank = s_gb->lcd_blank;
+  s_frame_checkpoint.cart_is_mbc3O = s_gb->cart_is_mbc3O;
+  s_frame_checkpoint.mbc = s_gb->mbc;
+  s_frame_checkpoint.cart_ram = s_gb->cart_ram;
+  s_frame_checkpoint.num_rom_banks_mask = s_gb->num_rom_banks_mask;
+  s_frame_checkpoint.num_ram_banks = s_gb->num_ram_banks;
+  s_frame_checkpoint.selected_rom_bank = s_gb->selected_rom_bank;
+  s_frame_checkpoint.cart_ram_bank = s_gb->cart_ram_bank;
+  s_frame_checkpoint.enable_cart_ram = s_gb->enable_cart_ram;
+  s_frame_checkpoint.cart_mode_select = s_gb->cart_mode_select;
+  s_frame_checkpoint.cpu_reg = s_gb->cpu_reg;
+  s_frame_checkpoint.counter = s_gb->counter;
+  memcpy(s_frame_checkpoint.hram_io, s_gb->hram_io, sizeof(s_frame_checkpoint.hram_io));
+  memcpy(s_frame_checkpoint.bg_palette, s_gb->display.bg_palette,
+         sizeof(s_frame_checkpoint.bg_palette));
+  memcpy(s_frame_checkpoint.sp_palette, s_gb->display.sp_palette,
+         sizeof(s_frame_checkpoint.sp_palette));
+  s_frame_checkpoint.window_clear = s_gb->display.window_clear;
+  s_frame_checkpoint.WY = s_gb->display.WY;
+  s_frame_checkpoint.frame_skip_count = s_gb->display.frame_skip_count;
+  s_frame_checkpoint.interlace_count = s_gb->display.interlace_count;
+}
+
+static void prv_restore_frame_checkpoint(void) {
+  s_gb->gb_halt = s_frame_checkpoint.gb_halt;
+  s_gb->gb_ime = s_frame_checkpoint.gb_ime;
+  s_gb->gb_frame = s_frame_checkpoint.gb_frame;
+  s_gb->lcd_blank = s_frame_checkpoint.lcd_blank;
+  s_gb->cart_is_mbc3O = s_frame_checkpoint.cart_is_mbc3O;
+  s_gb->mbc = s_frame_checkpoint.mbc;
+  s_gb->cart_ram = s_frame_checkpoint.cart_ram;
+  s_gb->num_rom_banks_mask = s_frame_checkpoint.num_rom_banks_mask;
+  s_gb->num_ram_banks = s_frame_checkpoint.num_ram_banks;
+  s_gb->selected_rom_bank = s_frame_checkpoint.selected_rom_bank;
+  s_gb->cart_ram_bank = s_frame_checkpoint.cart_ram_bank;
+  s_gb->enable_cart_ram = s_frame_checkpoint.enable_cart_ram;
+  s_gb->cart_mode_select = s_frame_checkpoint.cart_mode_select;
+  s_gb->cpu_reg = s_frame_checkpoint.cpu_reg;
+  s_gb->counter = s_frame_checkpoint.counter;
+  memcpy(s_gb->hram_io, s_frame_checkpoint.hram_io, sizeof(s_frame_checkpoint.hram_io));
+  memcpy(s_gb->display.bg_palette, s_frame_checkpoint.bg_palette,
+         sizeof(s_frame_checkpoint.bg_palette));
+  memcpy(s_gb->display.sp_palette, s_frame_checkpoint.sp_palette,
+         sizeof(s_frame_checkpoint.sp_palette));
+  s_gb->display.window_clear = s_frame_checkpoint.window_clear;
+  s_gb->display.WY = s_frame_checkpoint.WY;
+  s_gb->display.frame_skip_count = s_frame_checkpoint.frame_skip_count;
+  s_gb->display.interlace_count = s_frame_checkpoint.interlace_count;
+}
+
 static void prv_free_save_ram(void) {
   free(s_cart_ram);
   s_cart_ram = NULL;
@@ -108,7 +189,10 @@ static bool prv_start_from_cart(const char *source_name) {
     prv_set_status("Loading bank 0");
     return false;
   }
-
+  if (!pb_cart_ensure_fixed_bank(s_cart)) {
+    prv_set_status("Loading bank 0");
+    return false;
+  }
   enum gb_init_error_e err = gb_init(s_gb, prv_rom_read, prv_cart_ram_read,
                                      prv_cart_ram_write, prv_gb_error, s_cart);
   if (err != GB_INIT_NO_ERROR) {
@@ -146,18 +230,21 @@ static bool prv_start_from_cart(const char *source_name) {
   return true;
 }
 
-static void prv_request_phone_bank(uint16_t bank, void *context) {
+static bool prv_request_phone_bank(uint16_t bank, uint16_t offset, uint16_t size,
+                                   void *context) {
   (void)context;
-  gb_phone_request_bank(bank);
-  snprintf(s_status, sizeof(s_status), "Loading bank %u", bank);
-  layer_mark_dirty(s_canvas);
+  if (gb_phone_request_bank(bank, offset, size)) {
+    snprintf(s_status, sizeof(s_status), "Loading bank %u", bank);
+    layer_mark_dirty(s_canvas);
+    return true;
+  }
+  APP_LOG(APP_LOG_LEVEL_WARNING, "phone request busy for bank %u fill %u",
+          (unsigned)bank, (unsigned)offset);
+  return false;
 }
 
 void pb_core_rom_bank_changed(struct gb_s *gb) {
-  if (gb != s_gb || !s_cart || s_cart->mode != PB_CART_MODE_PHONE) {
-    return;
-  }
-  pb_cart_ensure_bank(s_cart, gb->selected_rom_bank);
+  (void)gb;
 }
 
 bool pb_core_should_pause(struct gb_s *gb) {
@@ -240,15 +327,50 @@ static void prv_schedule_frame_timer(uint32_t delay_ms) {
   s_timer = app_timer_register(delay_ms, prv_frame_timer_cb, NULL);
 }
 
+static bool prv_rom_addr_for_pc(uint16_t pc, uint32_t *addr) {
+  if (pc < 0x4000) {
+    *addr = pc;
+    return true;
+  }
+  if (pc < 0x8000) {
+    uint16_t bank = s_gb->selected_rom_bank ? s_gb->selected_rom_bank : 1;
+    *addr = (uint32_t)pc + ((uint32_t)bank - 1u) * PB_CART_BANK_SIZE;
+    return true;
+  }
+  return false;
+}
+
+static bool prv_ensure_cpu_fetch_window(void) {
+  for (uint16_t ahead = 0; ahead < 3; ahead++) {
+    uint32_t addr;
+    uint16_t pc = (uint16_t)(s_gb->cpu_reg.pc.reg + ahead);
+    if (!prv_rom_addr_for_pc(pc, &addr)) {
+      continue;
+    }
+    if (!pb_cart_ensure_addr(s_cart, addr)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static bool prv_run_one_frame(void) {
   s_gb->direct.joypad = pb_input_joypad();
-  if (!pb_cart_ensure_bank(s_cart, s_gb->selected_rom_bank) || pb_cart_paused(s_cart)) {
-    return false;
+  s_gb->gb_frame = false;
+
+  while (!s_gb->gb_frame) {
+    if (pb_cart_paused(s_cart) || !prv_ensure_cpu_fetch_window()) {
+      return false;
+    }
+    pb_cart_clear_read_fault(s_cart);
+    prv_save_frame_checkpoint();
+    __gb_step_cpu(s_gb);
+    if (pb_cart_read_faulted(s_cart) || pb_cart_paused(s_cart)) {
+      prv_restore_frame_checkpoint();
+      return false;
+    }
   }
-  gb_run_frame(s_gb);
-  if (pb_cart_paused(s_cart)) {
-    return false;
-  }
+
   s_frames++;
   return true;
 }

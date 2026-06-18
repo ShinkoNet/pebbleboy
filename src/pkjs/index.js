@@ -368,32 +368,40 @@ function sendInfo() {
   });
 }
 
-function sendBank(bank) {
+function sendBank(bank, bankOffset, requestSize) {
   ensureRom(function(err) {
     if (err) {
       sendError(err);
       return;
     }
-    var start = bank * BANK_SIZE;
+    bankOffset = bankOffset || 0;
+    requestSize = requestSize || BANK_SIZE;
+    var start = bank * BANK_SIZE + bankOffset;
     if (start >= romBytes.length) {
       sendError('bank outside ROM');
       return;
     }
-    var size = Math.min(BANK_SIZE, romBytes.length - start);
-    console.log('pebbleboy: bank request ' + bank + ' size=' + size);
-    var messages = [{ PB_CMD: CMD.ROM_BANK_BEGIN, PB_BANK: bank, PB_SIZE: size }];
+    var size = Math.min(requestSize, BANK_SIZE - bankOffset, romBytes.length - start);
+    console.log('pebbleboy: bank request ' + bank + ' offset=' + bankOffset + ' size=' + size);
+    var messages = [{
+      PB_CMD: CMD.ROM_BANK_BEGIN,
+      PB_BANK: bank,
+      PB_OFFSET: bankOffset,
+      PB_SIZE: size
+    }];
     for (var off = 0; off < size; off += MSG_CHUNK) {
       var end = Math.min(off + MSG_CHUNK, size);
       messages.push({
         PB_CMD: CMD.ROM_BANK_DATA,
         PB_BANK: bank,
-        PB_OFFSET: off,
+        PB_OFFSET: bankOffset + off,
         PB_DATA: Array.prototype.slice.call(romBytes.subarray(start + off, start + end))
       });
     }
     messages.push({
       PB_CMD: CMD.ROM_BANK_END,
       PB_BANK: bank,
+      PB_OFFSET: bankOffset,
       PB_SIZE: size,
       PB_SHA1: romMeta.sha1
     });
@@ -406,7 +414,7 @@ Pebble.addEventListener('appmessage', function(e) {
   if (p.PB_CMD === CMD.ROM_INFO_REQUEST) {
     sendInfo();
   } else if (p.PB_CMD === CMD.ROM_BANK_REQUEST) {
-    sendBank(p.PB_BANK | 0);
+    sendBank(p.PB_BANK | 0, p.PB_OFFSET | 0, p.PB_SIZE | 0);
   }
 });
 

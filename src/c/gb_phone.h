@@ -38,8 +38,7 @@ typedef void (*PbPhoneEventCb)(const PbPhoneEvent *event, void *context);
 
 void gb_phone_init(PbCart *cart, PbPhoneEventCb event_cb, void *context);
 void gb_phone_deinit(void);
-void gb_phone_request_info(void);
-void gb_phone_request_bank(uint16_t bank);
+bool gb_phone_request_info(void);
+bool gb_phone_request_bank(uint16_t bank, uint16_t offset, uint16_t size);
 
 #endif
-

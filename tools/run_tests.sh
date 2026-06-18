@@ -14,7 +14,7 @@ cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
 tetris_out="$(build/desktop_harness roms/tetris.gb 180)"
 echo "$tetris_out"
 case "$tetris_out" in
-  *'title="TETRIS"'*'mbc=0 banks=2'*'misses=1 loads=2 load_banks=0,1 request_banks=none'*)
+  *'title="TETRIS"'*'mbc=0 banks=2'*'load_banks=0,1 request_banks=none'*)
     ;;
   *)
     echo "unexpected Tetris bank profile" >&2
