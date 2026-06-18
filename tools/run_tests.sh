@@ -8,6 +8,9 @@ mkdir -p build
 
 node tools/check_pkjs_hash.js roms/tetris.gb
 python3 tools/make_sram_probe_rom.py build/sram_probe.gb --value 0x42
+python3 tools/make_mbc_probe_rom.py build/mbc1_probe.gb --mbc mbc1
+python3 tools/make_mbc_probe_rom.py build/mbc3_probe.gb --mbc mbc3
+python3 tools/make_mbc_probe_rom.py build/mbc5_probe.gb --mbc mbc5
 
 cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
   tools/desktop_harness.c \
@@ -45,6 +48,19 @@ case "$sram_out" in
     exit 1
     ;;
 esac
+
+for mbc in 1 3 5; do
+  mbc_out="$(build/desktop_harness "build/mbc${mbc}_probe.gb" 20)"
+  echo "$mbc_out"
+  case "$mbc_out" in
+    *"title=\"MBC${mbc} PROBE\""*"mbc=${mbc} banks=4 save=8192 save0=42 save_nonff=1"*)
+      ;;
+    *)
+      echo "unexpected MBC${mbc} probe profile" >&2
+      exit 1
+      ;;
+  esac
+done
 
 if [ -f roms/pokered.gb ]; then
   pokered_boot_out="$(build/desktop_harness roms/pokered.gb 240)"
