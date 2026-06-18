@@ -26,6 +26,11 @@ cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
 build/cart_cache_test
 
 cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
+  tools/input_test.c src/c/gb_input.c \
+  -o build/input_test
+build/input_test
+
+cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
   tools/audio_mixer_test.c src/c/gb_audio.c \
   -o build/audio_mixer_test
 build/audio_mixer_test
