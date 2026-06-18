@@ -712,12 +712,16 @@ static void prv_frame_timer_cb(void *data) {
     if (completed_frame) {
       pb_audio_pump();
     } else {
-      pb_audio_suspend_stream();
+      pb_audio_pump_silence();
     }
     prv_log_perf();
     prv_maybe_flush_cart_ram(prv_now_ms());
   } else {
-    pb_audio_suspend_stream();
+    if (s_running) {
+      pb_audio_pump_silence();
+    } else {
+      pb_audio_suspend_stream();
+    }
   }
 
   if (s_canvas) {

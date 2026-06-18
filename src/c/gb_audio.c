@@ -294,20 +294,7 @@ void pb_audio_suspend_stream(void) {
 #endif
 }
 
-void pb_audio_pump(void) {
-  if (!s_requested) {
-    return;
-  }
-
-#ifndef PB_DESKTOP
-  if (!prv_open_stream()) {
-    return;
-  }
-#endif
-
-  for (uint16_t i = 0; i < AUDIO_PUMP_SAMPLES; i++) {
-    s_buffer[i] = prv_mix_sample();
-  }
+static void prv_write_buffer(void) {
   s_stats.pumps++;
 
 #ifndef PB_DESKTOP
@@ -338,6 +325,39 @@ void pb_audio_pump(void) {
 #else
   s_stats.last_write_size = sizeof(s_buffer);
 #endif
+}
+
+static bool prv_prepare_stream(void) {
+  if (!s_requested) {
+    return false;
+  }
+
+#ifndef PB_DESKTOP
+  if (!prv_open_stream()) {
+    return false;
+  }
+#endif
+  return true;
+}
+
+void pb_audio_pump(void) {
+  if (!prv_prepare_stream()) {
+    return;
+  }
+
+  for (uint16_t i = 0; i < AUDIO_PUMP_SAMPLES; i++) {
+    s_buffer[i] = prv_mix_sample();
+  }
+  prv_write_buffer();
+}
+
+void pb_audio_pump_silence(void) {
+  if (!prv_prepare_stream()) {
+    return;
+  }
+
+  memset(s_buffer, 0, sizeof(s_buffer));
+  prv_write_buffer();
 }
 
 void pb_audio_deinit(void) {

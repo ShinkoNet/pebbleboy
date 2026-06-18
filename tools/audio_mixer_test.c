@@ -109,11 +109,20 @@ static void test_master_mute(void) {
   expect(stats.nonzero == 0, "master mute left nonzero PCM samples");
 }
 
+static void test_silence_pump(void) {
+  test_pulse();
+  pb_audio_pump_silence();
+  AudioStats stats = stats_for_buffer();
+  expect(stats.nonzero == 0, "silence pump left nonzero PCM samples");
+  expect(pb_audio_stats()->last_write_size > 0, "silence pump did not write PCM");
+}
+
 int main(void) {
   test_pulse();
   test_wave();
   test_noise();
   test_master_mute();
+  test_silence_pump();
   printf("audio mixer test passed\n");
   return 0;
 }

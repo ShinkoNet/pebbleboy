@@ -8,6 +8,7 @@
 void pb_audio_init(void);
 void pb_audio_set_enabled(bool enabled);
 void pb_audio_pump(void);
+void pb_audio_pump_silence(void);
 void pb_audio_suspend_stream(void);
 void pb_audio_deinit(void);
 bool pb_audio_enabled(void);
