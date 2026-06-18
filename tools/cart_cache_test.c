@@ -116,8 +116,42 @@ static void test_phone_prefetch(void) {
   printf("cart cache phone-prefetch test passed requests=%u\n", capture.count);
 }
 
+static void test_phone_fixed_bank_fill_size(void) {
+  PbCart cart;
+  RequestCapture capture = {0};
+  expect(pb_cart_init_phone(&cart, 8u * PB_CART_BANK_SIZE, capture_request, &capture),
+         "phone cart init failed");
+
+  expect(!pb_cart_ensure_bank(&cart, 0), "phone fixed bank was unexpectedly present");
+  expect(capture.count == 1, "fixed bank request count mismatch");
+  expect(capture.bank == 0 && capture.offset == 0 && capture.size == PB_CART_BANK_SIZE,
+         "fixed bank did not request one full 16 KiB fill");
+  expect(capture.demand, "fixed bank request was not marked as demand");
+
+  uint8_t *bank0 = malloc(PB_CART_BANK_SIZE);
+  expect(bank0 != NULL, "fixed bank buffer allocation failed");
+  memset(bank0, 0xA5, PB_CART_BANK_SIZE);
+  expect(pb_cart_phone_begin(&cart, 0, 0, PB_CART_BANK_SIZE), "fixed bank begin failed");
+  expect(pb_cart_phone_data(&cart, 0, 0, bank0, PB_CART_BANK_SIZE),
+         "fixed bank data failed");
+  expect(pb_cart_phone_end(&cart, 0, 0, PB_CART_BANK_SIZE), "fixed bank end failed");
+  expect(pb_cart_read(&cart, 0) == 0xA5, "fixed bank readback failed");
+  free(bank0);
+
+  memset(&capture, 0, sizeof(capture));
+  expect(!pb_cart_ensure_addr(&cart, PB_CART_BANK_SIZE + PB_CART_LINE_SIZE),
+         "phone switch bank line was unexpectedly present");
+  expect(capture.count == 1, "switch bank request count mismatch");
+  expect(capture.bank == 1 && capture.offset == PB_CART_LINE_SIZE &&
+         capture.size == PB_CART_LINE_SIZE, "switch bank did not request one 4 KiB line");
+  expect(capture.demand, "switch bank request was not marked as demand");
+  printf("cart cache phone fixed-bank fill test passed fixed=%u switch=%u\n",
+         (unsigned)PB_CART_BANK_SIZE, (unsigned)PB_CART_LINE_SIZE);
+}
+
 int main(void) {
   test_active_bank_retention();
   test_phone_prefetch();
+  test_phone_fixed_bank_fill_size();
   return 0;
 }

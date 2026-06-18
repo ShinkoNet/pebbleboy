@@ -104,7 +104,7 @@ if ! grep -q "phone SRAM window deferred: 4096/32768" "$log"; then
   echo "phone-backed Pokemon did not defer the expected SRAM window" >&2
   exit 1
 fi
-if ! grep -Eq "started POKEMON RED phone, save=32768, heap free=([8-9][0-9]{3}|[1-9][0-9]{4,})" "$log"; then
+if ! grep -Eq "started POKEMON RED phone, save=32768, heap free=([7-9][0-9]{3}|[1-9][0-9]{4,})" "$log"; then
   echo "phone-backed Pokemon did not start with deferred SRAM heap headroom" >&2
   exit 1
 fi
@@ -114,7 +114,7 @@ if ! grep -q "fps=" "$log"; then
 fi
 
 python3 tools/analyze_bank_log.py --expect-no-resource --expect-phone-title "POKEMON RED" \
-  --expect-phone-request-size 4096 --expect-phone-latencies \
+  --expect-phone-request-sizes 4096,16384 --expect-phone-latencies \
   --allow-pending-phone-request --max-phone-latency-ms 5000 "$log"
 
 if kill -0 "$log_pid" 2>/dev/null; then

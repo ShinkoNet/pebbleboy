@@ -38,12 +38,14 @@ static uint32_t prv_slot_start(uint32_t addr) {
   return addr & ~(PB_CART_LINE_SIZE - 1u);
 }
 
-static uint32_t prv_fill_unit(const PbCart *cart) {
-  return cart->bank_count <= 2 ? PB_CART_BANK_SIZE : PB_CART_LINE_SIZE;
+static uint32_t prv_fill_unit(const PbCart *cart, uint32_t addr) {
+  return cart->bank_count <= 2 || addr < PB_CART_BANK_SIZE
+      ? PB_CART_BANK_SIZE
+      : PB_CART_LINE_SIZE;
 }
 
 static uint32_t prv_fill_start(const PbCart *cart, uint32_t addr) {
-  uint32_t fill_unit = prv_fill_unit(cart);
+  uint32_t fill_unit = prv_fill_unit(cart, addr);
   return addr & ~(fill_unit - 1u);
 }
 
@@ -59,7 +61,7 @@ static uint16_t prv_fill_size(const PbCart *cart, uint32_t start) {
   if (start >= cart->rom_size) {
     return 0;
   }
-  uint32_t fill_unit = prv_fill_unit(cart);
+  uint32_t fill_unit = prv_fill_unit(cart, start);
   uint32_t bank_left = PB_CART_BANK_SIZE - (start & (PB_CART_BANK_SIZE - 1u));
   uint32_t rom_left = cart->rom_size - start;
   uint32_t left = bank_left < rom_left ? bank_left : rom_left;

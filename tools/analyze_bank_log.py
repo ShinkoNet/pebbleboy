@@ -38,6 +38,7 @@ def main():
     parser.add_argument("--expect-phone-banks")
     parser.add_argument("--expect-phone-request-count", type=int)
     parser.add_argument("--expect-phone-request-size", type=int)
+    parser.add_argument("--expect-phone-request-sizes")
     parser.add_argument("--expect-phone-latencies", action="store_true")
     parser.add_argument("--allow-pending-phone-request", action="store_true")
     parser.add_argument("--max-phone-latency-ms", type=int)
@@ -128,6 +129,16 @@ def main():
         if bad_sizes:
             return fail(
                 f"expected phone request size {args.expect_phone_request_size}; "
+                f"saw {bank_set(phone_request_sizes)}"
+            )
+    if args.expect_phone_request_sizes:
+        expected_sizes = {
+            int(part) for part in args.expect_phone_request_sizes.split(",") if part
+        }
+        bad_sizes = [size for size in phone_request_sizes if size not in expected_sizes]
+        if bad_sizes:
+            return fail(
+                f"expected phone request sizes within {bank_set(expected_sizes)}; "
                 f"saw {bank_set(phone_request_sizes)}"
             )
     if args.expect_phone_latencies and len(phone_latencies) != len(phone_requests):

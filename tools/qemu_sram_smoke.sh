@@ -206,7 +206,7 @@ if [ "$(grep -c "phone SRAM bank 0 saved" "$bank_log" || true)" -lt 2 ]; then
 fi
 
 python3 tools/analyze_bank_log.py --expect-no-resource --expect-phone-title "MBC3 RAM" \
-  --expect-phone-banks 0 --expect-phone-request-size 4096 --expect-phone-latencies \
+  --expect-phone-banks 0 --expect-phone-request-size 16384 --expect-phone-latencies \
   --max-phone-latency-ms 5000 "$bank_log"
 
 if kill -0 "$bank_log_pid" 2>/dev/null; then
