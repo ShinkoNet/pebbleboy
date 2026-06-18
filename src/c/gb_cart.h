@@ -17,6 +17,7 @@
 #define PB_CART_SLOT_SIZE PB_CART_LINE_SIZE
 #define PB_CART_CACHE_SLOTS (PB_CART_CACHE_BYTES / PB_CART_LINE_SIZE)
 #define PB_CART_BANK0_SLOTS (PB_CART_BANK_SIZE / PB_CART_LINE_SIZE)
+#define PB_CART_ACTIVE_BANK_NONE UINT16_MAX
 
 typedef enum {
   PB_CART_MODE_NONE = 0,
@@ -60,6 +61,7 @@ typedef struct {
   bool read_faulted;
   uint32_t pending_start;
   uint32_t read_fault_start;
+  uint16_t active_bank;
   char error[64];
   PbCartBankRequestCb request_cb;
   void *request_context;
@@ -92,6 +94,7 @@ bool pb_cart_ensure_addr(PbCart *cart, uint32_t addr);
 bool pb_cart_ensure_bank(PbCart *cart, uint16_t bank);
 bool pb_cart_ensure_fixed_bank(PbCart *cart);
 bool pb_cart_has_bank(const PbCart *cart, uint16_t bank);
+void pb_cart_set_active_bank(PbCart *cart, uint16_t bank);
 bool pb_cart_paused(const PbCart *cart);
 bool pb_cart_read_faulted(const PbCart *cart);
 void pb_cart_clear_read_fault(PbCart *cart);

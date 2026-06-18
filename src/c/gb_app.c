@@ -332,6 +332,7 @@ static bool prv_start_from_cart(const char *source_name) {
     layer_mark_dirty(s_canvas);
     return false;
   }
+  pb_cart_set_active_bank(s_cart, s_gb->selected_rom_bank);
 
   gb_init_lcd(s_gb, prv_lcd_draw_line);
   s_gb->direct.frame_skip = true;
@@ -396,7 +397,9 @@ static bool prv_request_phone_bank(uint16_t bank, uint16_t offset, uint16_t size
 }
 
 void pb_core_rom_bank_changed(struct gb_s *gb) {
-  (void)gb;
+  if (gb == s_gb && s_cart) {
+    pb_cart_set_active_bank(s_cart, gb->selected_rom_bank);
+  }
 }
 
 bool pb_core_should_pause(struct gb_s *gb) {

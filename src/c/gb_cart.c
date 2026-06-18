@@ -101,6 +101,11 @@ static bool prv_has_loading_slots(const PbCart *cart) {
   return false;
 }
 
+static bool prv_slot_is_active_bank(const PbCart *cart, const PbCartSlot *slot) {
+  return cart->active_bank != PB_CART_ACTIVE_BANK_NONE && slot->start >= 0 &&
+         prv_slot_bank((uint32_t)slot->start) == cart->active_bank;
+}
+
 static PbCartSlot *prv_select_slot(PbCart *cart, uint32_t start) {
   PbCartSlot *existing = prv_find_slot(cart, start);
   if (existing) {
@@ -121,13 +126,24 @@ static PbCartSlot *prv_select_slot(PbCart *cart, uint32_t start) {
   }
 
   int victim = -1;
+  int active_victim = -1;
   for (int i = (int)PB_CART_BANK0_SLOTS; i < (int)PB_CART_CACHE_SLOTS; i++) {
     if (cart->slots[i].loading) {
+      continue;
+    }
+    if (prv_slot_is_active_bank(cart, &cart->slots[i])) {
+      if (active_victim < 0 ||
+          cart->slots[i].last_used < cart->slots[active_victim].last_used) {
+        active_victim = i;
+      }
       continue;
     }
     if (victim < 0 || cart->slots[i].last_used < cart->slots[victim].last_used) {
       victim = i;
     }
+  }
+  if (victim < 0) {
+    victim = active_victim;
   }
   if (victim < 0) {
     victim = (int)PB_CART_BANK0_SLOTS;
@@ -149,6 +165,7 @@ void pb_cart_init_empty(PbCart *cart) {
   cart->mode = PB_CART_MODE_NONE;
   cart->pending_start = UINT32_MAX;
   cart->read_fault_start = UINT32_MAX;
+  cart->active_bank = PB_CART_ACTIVE_BANK_NONE;
   for (int i = 0; i < (int)PB_CART_CACHE_SLOTS; i++) {
     cart->slots[i].start = -1;
   }
@@ -378,6 +395,10 @@ bool pb_cart_has_bank(const PbCart *cart, uint16_t bank) {
   uint32_t start = (uint32_t)bank * PB_CART_BANK_SIZE;
   const PbCartSlot *slot = prv_find_const_slot(cart, start);
   return slot && slot->valid;
+}
+
+void pb_cart_set_active_bank(PbCart *cart, uint16_t bank) {
+  cart->active_bank = bank < cart->bank_count ? bank : PB_CART_ACTIVE_BANK_NONE;
 }
 
 bool pb_cart_paused(const PbCart *cart) {

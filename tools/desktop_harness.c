@@ -38,6 +38,12 @@ static void lcd_line(struct gb_s *gb, const uint8_t *pixels, const uint_fast8_t 
   pb_video_draw_line(pixels, (uint8_t)line);
 }
 
+void pb_core_rom_bank_changed(struct gb_s *gb) {
+  if (gb == &s_gb) {
+    pb_cart_set_active_bank(&s_cart, gb->selected_rom_bank);
+  }
+}
+
 static void format_bank_mask(uint64_t mask, char *out, size_t out_size) {
   size_t pos = 0;
   bool first = true;
@@ -173,6 +179,7 @@ int main(int argc, char **argv) {
     free(rom);
     return 1;
   }
+  pb_cart_set_active_bank(&s_cart, s_gb.selected_rom_bank);
   gb_init_lcd(&s_gb, lcd_line);
 
   if (getenv("PB_DESKTOP_NO_SAVE")) {
