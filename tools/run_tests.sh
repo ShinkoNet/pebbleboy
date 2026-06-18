@@ -19,6 +19,11 @@ cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
   -o build/cart_cache_test
 build/cart_cache_test
 
+cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
+  tools/audio_mixer_test.c src/c/gb_audio.c \
+  -o build/audio_mixer_test
+build/audio_mixer_test
+
 tetris_out="$(build/desktop_harness roms/tetris.gb 180)"
 echo "$tetris_out"
 case "$tetris_out" in

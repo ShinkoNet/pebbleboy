@@ -255,7 +255,7 @@ void pb_audio_set_enabled(bool enabled) {
     APP_LOG(APP_LOG_LEVEL_INFO, "speaker stream disabled");
   }
 #else
-  (void)enabled;
+  s_enabled = enabled;
 #endif
 }
 
@@ -292,6 +292,15 @@ void pb_audio_deinit(void) {
 bool pb_audio_enabled(void) {
   return s_enabled;
 }
+
+#ifdef PB_DESKTOP
+const int8_t *pb_audio_debug_buffer(size_t *size_out) {
+  if (size_out) {
+    *size_out = sizeof(s_buffer);
+  }
+  return s_buffer;
+}
+#endif
 
 uint8_t audio_read(uint16_t addr) {
   if (addr < AUDIO_REG_BASE || addr >= AUDIO_REG_BASE + AUDIO_REG_COUNT) {
