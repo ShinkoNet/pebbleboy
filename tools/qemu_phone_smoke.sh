@@ -126,6 +126,9 @@ fi
 sleep "${PB_QEMU_PHONE_EXTRA_WAIT:-5}"
 python3 tools/qemu_screendump.py "$screenshot"
 python3 tools/check_screenshot.py --allow-loading "$screenshot"
+if [ "${PB_QEMU_PHONE_CHECK_POKEMON_TITLE:-0}" = "1" ]; then
+  python3 tools/check_pokemon_title.py "$screenshot"
+fi
 
 cleanup
 trap - EXIT

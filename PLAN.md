@@ -290,8 +290,10 @@ Test layers:
 
 1. Desktop harness with framebuffer hashes.
 2. Pebble QEMU screenshots.
-3. QEMU audio capture for basic waveform checks.
-4. Real Pebble Time 2 performance, audio, and input testing.
+3. Longer QEMU Pokemon title-screen screenshot checks for large-ROM visual
+   regressions such as black sprite boxes.
+4. QEMU audio capture for basic waveform checks.
+5. Real Pebble Time 2 performance, audio, and input testing.
 
 Log at runtime:
 
