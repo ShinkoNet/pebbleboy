@@ -146,9 +146,16 @@ function sha1(bytes) {
   var data = new Uint8Array(paddedLen + 8);
   data.set(bytes);
   data[bytes.length] = 0x80;
-  for (var k = 0; k < 8; k++) {
-    data[data.length - 1 - k] = (ml >>> (k * 8)) & 0xFF;
-  }
+  var highLen = Math.floor(ml / 0x100000000);
+  var lowLen = ml >>> 0;
+  data[data.length - 8] = (highLen >>> 24) & 0xFF;
+  data[data.length - 7] = (highLen >>> 16) & 0xFF;
+  data[data.length - 6] = (highLen >>> 8) & 0xFF;
+  data[data.length - 5] = highLen & 0xFF;
+  data[data.length - 4] = (lowLen >>> 24) & 0xFF;
+  data[data.length - 3] = (lowLen >>> 16) & 0xFF;
+  data[data.length - 2] = (lowLen >>> 8) & 0xFF;
+  data[data.length - 1] = lowLen & 0xFF;
   var h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFE, h3 = 0x10325476, h4 = 0xC3D2E1F0;
   var w = new Array(80);
   for (var off = 0; off < data.length; off += 64) {

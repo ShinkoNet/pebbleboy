@@ -6,6 +6,8 @@ cd "$(dirname "$0")/.."
 python3 tools/sync_roms.py
 mkdir -p build
 
+node tools/check_pkjs_hash.js roms/tetris.gb
+
 cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
   tools/desktop_harness.c \
   src/c/peanut_gb.c src/c/gb_hooks.c src/c/gb_audio.c src/c/gb_cart.c src/c/gb_video.c \
