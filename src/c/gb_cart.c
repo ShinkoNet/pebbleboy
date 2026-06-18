@@ -38,8 +38,13 @@ static uint32_t prv_slot_start(uint32_t addr) {
   return addr & ~(PB_CART_LINE_SIZE - 1u);
 }
 
-static uint32_t prv_fill_start(uint32_t addr) {
-  return addr & ~(PB_CART_FILL_SIZE - 1u);
+static uint32_t prv_fill_unit(const PbCart *cart) {
+  return cart->bank_count <= 2 ? PB_CART_BANK_SIZE : PB_CART_LINE_SIZE;
+}
+
+static uint32_t prv_fill_start(const PbCart *cart, uint32_t addr) {
+  uint32_t fill_unit = prv_fill_unit(cart);
+  return addr & ~(fill_unit - 1u);
 }
 
 static uint16_t prv_slot_size(const PbCart *cart, uint32_t start) {
@@ -54,10 +59,11 @@ static uint16_t prv_fill_size(const PbCart *cart, uint32_t start) {
   if (start >= cart->rom_size) {
     return 0;
   }
+  uint32_t fill_unit = prv_fill_unit(cart);
   uint32_t bank_left = PB_CART_BANK_SIZE - (start & (PB_CART_BANK_SIZE - 1u));
   uint32_t rom_left = cart->rom_size - start;
   uint32_t left = bank_left < rom_left ? bank_left : rom_left;
-  return (uint16_t)(left > PB_CART_FILL_SIZE ? PB_CART_FILL_SIZE : left);
+  return (uint16_t)(left > fill_unit ? fill_unit : left);
 }
 
 static uint16_t prv_slot_bank(uint32_t start) {
@@ -180,7 +186,7 @@ static bool prv_load_line_from_source(PbCart *cart, PbCartSlot *slot, uint32_t s
 }
 
 static bool prv_load_fill(PbCart *cart, uint32_t requested_start) {
-  uint32_t start = prv_fill_start(requested_start);
+  uint32_t start = prv_fill_start(cart, requested_start);
   if (start >= cart->rom_size) {
     pb_cart_set_error(cart, "fill outside ROM");
     return false;
@@ -265,7 +271,7 @@ static void prv_prepare_loading_fill(PbCart *cart, uint32_t start, uint16_t fill
 
 static bool prv_request_phone_fill(PbCart *cart, uint32_t requested_start) {
   uint32_t line_start = prv_slot_start(requested_start);
-  uint32_t start = prv_fill_start(line_start);
+  uint32_t start = prv_fill_start(cart, line_start);
   uint16_t bank = prv_slot_bank(start);
   uint16_t offset = prv_slot_bank_offset(start);
   uint16_t size = prv_fill_size(cart, start);

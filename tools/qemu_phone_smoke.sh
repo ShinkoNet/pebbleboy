@@ -113,7 +113,8 @@ if ! grep -q "fps=" "$log"; then
   exit 1
 fi
 
-python3 tools/analyze_bank_log.py --expect-no-resource --expect-phone-title "POKEMON RED" "$log"
+python3 tools/analyze_bank_log.py --expect-no-resource --expect-phone-title "POKEMON RED" \
+  --expect-phone-request-size 4096 "$log"
 
 if kill -0 "$log_pid" 2>/dev/null; then
   kill "$log_pid" 2>/dev/null || true

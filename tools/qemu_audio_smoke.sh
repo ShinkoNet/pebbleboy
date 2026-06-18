@@ -76,7 +76,9 @@ if ! grep -q "phone bank 1 ready" "$log"; then
   exit 1
 fi
 
-python3 tools/analyze_bank_log.py --expect-no-resource --expect-phone-title TETRIS --expect-phone-banks 0,1 "$log"
+python3 tools/analyze_bank_log.py --expect-no-resource --expect-phone-title TETRIS \
+  --expect-phone-banks 0,1 --expect-phone-request-count 2 \
+  --expect-phone-request-size 16384 "$log"
 
 cleanup
 trap - EXIT

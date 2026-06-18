@@ -8,7 +8,7 @@ import sys
 
 
 LOAD_RE = re.compile(r"cart: (resource|memory|phone) bank (\d+)(?: (?:page|fill) \d+)? loaded")
-PHONE_REQUEST_RE = re.compile(r"cart: phone request bank (\d+)")
+PHONE_REQUEST_RE = re.compile(r"cart: phone request bank (\d+) fill (\d+) size=(\d+)")
 
 
 def bank_set(values):
@@ -35,10 +35,13 @@ def main():
     parser.add_argument("--expect-no-resource", action="store_true")
     parser.add_argument("--expect-phone-title")
     parser.add_argument("--expect-phone-banks")
+    parser.add_argument("--expect-phone-request-count", type=int)
+    parser.add_argument("--expect-phone-request-size", type=int)
     args = parser.parse_args()
 
     loads = collections.defaultdict(list)
     phone_requests = []
+    phone_request_sizes = []
     started_tetris = False
     phone_titles = []
     phone_offer = False
@@ -64,6 +67,7 @@ def main():
             request_match = PHONE_REQUEST_RE.search(line)
             if request_match:
                 phone_requests.append(int(request_match.group(1)))
+                phone_request_sizes.append(int(request_match.group(3)))
 
     request_counts = collections.Counter(phone_requests)
     print(
@@ -73,6 +77,7 @@ def main():
         f"phone={bank_set(loads['phone'])} "
         f"phone_requests={len(phone_requests)} "
         f"request_banks={bank_set(phone_requests)} "
+        f"request_sizes={bank_set(phone_request_sizes)} "
         f"top_requests={top_counts(request_counts)}"
     )
 
@@ -96,6 +101,18 @@ def main():
         actual = set(loads["phone"])
         if actual != expected:
             return fail(f"expected phone banks {bank_set(expected)}; saw {bank_set(actual)}")
+    if (args.expect_phone_request_count is not None and
+            len(phone_requests) != args.expect_phone_request_count):
+        return fail(
+            f"expected {args.expect_phone_request_count} phone requests; saw {len(phone_requests)}"
+        )
+    if args.expect_phone_request_size is not None:
+        bad_sizes = [size for size in phone_request_sizes if size != args.expect_phone_request_size]
+        if bad_sizes:
+            return fail(
+                f"expected phone request size {args.expect_phone_request_size}; "
+                f"saw {bank_set(phone_request_sizes)}"
+            )
 
     return 0
 
