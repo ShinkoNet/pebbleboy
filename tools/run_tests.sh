@@ -7,6 +7,7 @@ python3 tools/sync_roms.py
 mkdir -p build
 
 node tools/check_pkjs_hash.js roms/tetris.gb
+python3 tools/make_sram_probe_rom.py build/sram_probe.gb --value 0x42
 
 cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
   tools/desktop_harness.c \
@@ -20,6 +21,17 @@ case "$tetris_out" in
     ;;
   *)
     echo "unexpected Tetris bank profile" >&2
+    exit 1
+    ;;
+esac
+
+sram_out="$(build/desktop_harness build/sram_probe.gb 20)"
+echo "$sram_out"
+case "$sram_out" in
+  *'title="SRAM PROBE"'*'mbc=1 banks=2 save=8192 save0=42 save_nonff=1'*)
+    ;;
+  *)
+    echo "unexpected SRAM probe profile" >&2
     exit 1
     ;;
 esac

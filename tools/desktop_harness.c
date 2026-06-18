@@ -204,10 +204,18 @@ int main(int argc, char **argv) {
   char request_banks[192];
   format_bank_mask(stats->load_bank_mask, load_banks, sizeof(load_banks));
   format_bank_mask(stats->request_bank_mask, request_banks, sizeof(request_banks));
-  printf("rom=%s title=\"%s\" frames=%d mbc=%d banks=%u save=%zu hash=%08x hits=%u misses=%u loads=%u load_banks=%s request_banks=%s\n",
+  uint8_t save0 = (s_save_ram && s_save_ram_size) ? s_save_ram[0] : 0xFF;
+  size_t save_nonff = 0;
+  for (size_t i = 0; i < s_save_ram_size && s_save_ram; i++) {
+    if (s_save_ram[i] != 0xFF) {
+      save_nonff++;
+    }
+  }
+  printf("rom=%s title=\"%s\" frames=%d mbc=%d banks=%u save=%zu save0=%02x save_nonff=%zu hash=%08x hits=%u misses=%u loads=%u load_banks=%s request_banks=%s\n",
          argv[1], title, frames, (int)s_gb.mbc, (unsigned)s_cart.bank_count,
-         s_save_ram_size, pb_video_hash(), (unsigned)stats->hits,
-         (unsigned)stats->misses, (unsigned)stats->loads, load_banks, request_banks);
+         s_save_ram_size, save0, save_nonff, pb_video_hash(),
+         (unsigned)stats->hits, (unsigned)stats->misses, (unsigned)stats->loads,
+         load_banks, request_banks);
 
   free(s_save_ram);
   free(rom);
