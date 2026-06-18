@@ -212,6 +212,7 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
                             size->value->uint16)) {
         event.type = PB_PHONE_EVENT_BANK_READY;
         event.bank = bank->value->uint16;
+        event.offset = offset ? offset->value->uint16 : 0;
         event.size = size->value->uint16;
         prv_emit(&event);
       }

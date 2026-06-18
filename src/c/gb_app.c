@@ -45,6 +45,11 @@ static uint64_t s_last_log_ms;
 static uint32_t s_last_log_frame;
 static uint64_t s_last_phone_info_request_ms;
 static uint32_t s_frame_budget_hits;
+static bool s_phone_bank_load_pending;
+static uint16_t s_phone_bank_load_bank;
+static uint16_t s_phone_bank_load_offset;
+static uint16_t s_phone_bank_load_size;
+static uint64_t s_phone_bank_load_ms;
 
 typedef struct {
   bool gb_halt;
@@ -82,6 +87,11 @@ static uint64_t prv_now_ms(void) {
   uint16_t ms;
   time_ms(&sec, &ms);
   return (uint64_t)sec * 1000 + ms;
+}
+
+static uint32_t prv_elapsed_ms(uint64_t start_ms) {
+  uint64_t now = prv_now_ms();
+  return now >= start_ms ? (uint32_t)(now - start_ms) : 0;
 }
 
 static void prv_set_status(const char *status) {
@@ -369,7 +379,13 @@ static bool prv_start_from_cart(const char *source_name) {
 static bool prv_request_phone_bank(uint16_t bank, uint16_t offset, uint16_t size,
                                    void *context) {
   (void)context;
+  uint64_t started_ms = prv_now_ms();
   if (gb_phone_request_bank(bank, offset, size)) {
+    s_phone_bank_load_pending = true;
+    s_phone_bank_load_bank = bank;
+    s_phone_bank_load_offset = offset;
+    s_phone_bank_load_size = size;
+    s_phone_bank_load_ms = started_ms;
     snprintf(s_status, sizeof(s_status), "Loading bank %u", bank);
     layer_mark_dirty(s_canvas);
     return true;
@@ -455,8 +471,16 @@ static void prv_phone_event(const PbPhoneEvent *event, void *context) {
       layer_mark_dirty(s_canvas);
       break;
     case PB_PHONE_EVENT_BANK_READY:
-      APP_LOG(APP_LOG_LEVEL_INFO, "phone bank %u ready size=%u",
-              (unsigned)event->bank, (unsigned)event->size);
+      uint32_t latency_ms = 0;
+      if (s_phone_bank_load_pending && s_phone_bank_load_bank == event->bank &&
+          s_phone_bank_load_offset == event->offset && s_phone_bank_load_size == event->size) {
+        latency_ms = prv_elapsed_ms(s_phone_bank_load_ms);
+        s_phone_bank_load_pending = false;
+        s_cart->stats.last_load_ms = latency_ms;
+      }
+      APP_LOG(APP_LOG_LEVEL_INFO, "phone bank %u ready fill=%u size=%u latency_ms=%lu",
+              (unsigned)event->bank, (unsigned)event->offset,
+              (unsigned)event->size, latency_ms);
       if (!s_running && event->bank == 0) {
         prv_start_from_cart("phone");
       } else if (s_cart && s_cart->mode == PB_CART_MODE_PHONE && !pb_cart_paused(s_cart)) {
@@ -524,11 +548,11 @@ static void prv_log_perf(void) {
   uint32_t frame_delta = s_frames - s_last_log_frame;
   uint32_t ms_delta = (uint32_t)(now - s_last_log_ms);
   APP_LOG(APP_LOG_LEVEL_INFO,
-          "fps=%u cache h=%lu m=%lu loads=%lu req=%lu last_miss=%u last_load=%u heap free=%u used=%u",
+          "fps=%u cache h=%lu m=%lu loads=%lu req=%lu last_miss=%u last_load=%u last_load_ms=%lu heap free=%u used=%u",
           (unsigned)((frame_delta * 1000u) / (ms_delta ? ms_delta : 1)),
           stats->hits, stats->misses, stats->loads, stats->phone_requests,
           (unsigned)stats->last_miss_bank, (unsigned)stats->last_load_bank,
-          (unsigned)heap_bytes_free(), (unsigned)heap_bytes_used());
+          stats->last_load_ms, (unsigned)heap_bytes_free(), (unsigned)heap_bytes_used());
   s_last_log_ms = now;
   s_last_log_frame = s_frames;
 }

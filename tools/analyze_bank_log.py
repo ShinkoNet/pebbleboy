@@ -9,6 +9,7 @@ import sys
 
 LOAD_RE = re.compile(r"cart: (resource|memory|phone) bank (\d+)(?: (?:page|fill) \d+)? loaded")
 PHONE_REQUEST_RE = re.compile(r"cart: phone request bank (\d+) fill (\d+) size=(\d+)")
+PHONE_LATENCY_RE = re.compile(r"phone bank (\d+) ready .* latency_ms=(\d+)")
 
 
 def bank_set(values):
@@ -37,11 +38,14 @@ def main():
     parser.add_argument("--expect-phone-banks")
     parser.add_argument("--expect-phone-request-count", type=int)
     parser.add_argument("--expect-phone-request-size", type=int)
+    parser.add_argument("--expect-phone-latencies", action="store_true")
+    parser.add_argument("--max-phone-latency-ms", type=int)
     args = parser.parse_args()
 
     loads = collections.defaultdict(list)
     phone_requests = []
     phone_request_sizes = []
+    phone_latencies = []
     started_tetris = False
     phone_titles = []
     phone_offer = False
@@ -69,7 +73,18 @@ def main():
                 phone_requests.append(int(request_match.group(1)))
                 phone_request_sizes.append(int(request_match.group(3)))
 
+            latency_match = PHONE_LATENCY_RE.search(line)
+            if latency_match:
+                phone_latencies.append(int(latency_match.group(2)))
+
     request_counts = collections.Counter(phone_requests)
+    latency_summary = "none"
+    if phone_latencies:
+        latency_summary = (
+            f"{min(phone_latencies)}/"
+            f"{sum(phone_latencies) // len(phone_latencies)}/"
+            f"{max(phone_latencies)}"
+        )
     print(
         "bank log: "
         f"loads resource={bank_set(loads['resource'])} "
@@ -78,6 +93,7 @@ def main():
         f"phone_requests={len(phone_requests)} "
         f"request_banks={bank_set(phone_requests)} "
         f"request_sizes={bank_set(phone_request_sizes)} "
+        f"latency_ms_min_avg_max={latency_summary} "
         f"top_requests={top_counts(request_counts)}"
     )
 
@@ -112,6 +128,18 @@ def main():
             return fail(
                 f"expected phone request size {args.expect_phone_request_size}; "
                 f"saw {bank_set(phone_request_sizes)}"
+            )
+    if args.expect_phone_latencies and len(phone_latencies) != len(phone_requests):
+        return fail(
+            f"expected one phone latency per request; saw "
+            f"{len(phone_latencies)} latencies for {len(phone_requests)} requests"
+        )
+    if args.max_phone_latency_ms is not None:
+        bad_latencies = [value for value in phone_latencies if value > args.max_phone_latency_ms]
+        if bad_latencies:
+            return fail(
+                f"expected phone latencies <= {args.max_phone_latency_ms}ms; "
+                f"saw {max(bad_latencies)}ms"
             )
 
     return 0
