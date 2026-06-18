@@ -603,8 +603,9 @@ static void prv_log_perf(void) {
           stats->hits, stats->misses, stats->loads, stats->phone_requests,
           (unsigned)stats->last_miss_bank, (unsigned)stats->last_load_bank,
           stats->last_load_ms, (unsigned)heap_bytes_free(), (unsigned)heap_bytes_used());
-  APP_LOG(APP_LOG_LEVEL_INFO, "audio pumps=%lu partial=%lu last_write=%lu",
-          audio_stats->pumps, audio_stats->partial_writes, audio_stats->last_write_size);
+  APP_LOG(APP_LOG_LEVEL_INFO, "audio pumps=%lu partial=%lu errors=%lu last_write=%lu",
+          audio_stats->pumps, audio_stats->partial_writes,
+          audio_stats->stream_errors, audio_stats->last_write_size);
   s_last_log_ms = now;
   s_last_log_frame = s_frames;
 }
@@ -698,7 +699,8 @@ static void prv_frame_timer_cb(void *data) {
     prv_start_from_cart("phone");
   }
 
-  if (s_running && !pb_cart_paused(s_cart) && !s_cart_ram_paused) {
+  bool can_run = s_running && !pb_cart_paused(s_cart) && !s_cart_ram_paused;
+  if (can_run) {
     uint32_t step_budget = MAX_CPU_STEPS_PER_TICK;
     bool completed_frame = false;
     for (int i = 0; i < FRAMES_PER_TICK && step_budget; i++) {
@@ -709,9 +711,13 @@ static void prv_frame_timer_cb(void *data) {
     }
     if (completed_frame) {
       pb_audio_pump();
+    } else {
+      pb_audio_suspend_stream();
     }
     prv_log_perf();
     prv_maybe_flush_cart_ram(prv_now_ms());
+  } else {
+    pb_audio_suspend_stream();
   }
 
   if (s_canvas) {

@@ -47,7 +47,7 @@ for _ in $(seq 1 80); do
   if grep -q "speaker stream enabled" "$log" &&
      grep -q "started TETRIS phone" "$log" &&
      grep -q "phone bank 1 ready" "$log" &&
-     grep -Eq "audio pumps=[1-9][0-9]* partial=[0-9]+ last_write=[1-9][0-9]*" "$log"; then
+     grep -Eq "audio pumps=[1-9][0-9]* partial=[0-9]+ errors=[0-9]+ last_write=[1-9][0-9]*" "$log"; then
     break
   fi
   if ! kill -0 "$log_pid" 2>/dev/null; then
@@ -76,7 +76,7 @@ if ! grep -q "phone bank 1 ready" "$log"; then
   echo "missing streamed bank 1 completion in $log" >&2
   exit 1
 fi
-if ! grep -Eq "audio pumps=[1-9][0-9]* partial=[0-9]+ last_write=[1-9][0-9]*" "$log"; then
+if ! grep -Eq "audio pumps=[1-9][0-9]* partial=[0-9]+ errors=[0-9]+ last_write=[1-9][0-9]*" "$log"; then
   echo "missing audio pump counters in $log" >&2
   exit 1
 fi

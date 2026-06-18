@@ -13,6 +13,7 @@
 #define AUDIO_PHASE_ONE 65536u
 #define AUDIO_WAVE_PHASE_ONE (32u * AUDIO_PHASE_ONE)
 #define AUDIO_ENV_TICK_SAMPLES (AUDIO_SAMPLE_RATE / 64u)
+#define AUDIO_MAX_CONSECUTIVE_PARTIAL_WRITES 4u
 
 typedef struct {
   bool enabled;
@@ -34,6 +35,7 @@ typedef struct {
   uint32_t env_samples;
 } NoiseChannel;
 
+static bool s_requested;
 static bool s_enabled;
 static uint8_t s_regs[AUDIO_REG_COUNT];
 static int8_t s_buffer[AUDIO_PUMP_SAMPLES];
@@ -42,6 +44,7 @@ static PulseChannel s_pulse2;
 static WaveChannel s_wave;
 static NoiseChannel s_noise;
 static PbAudioStats s_stats;
+static uint8_t s_consecutive_partial_writes;
 
 static uint8_t prv_idx(uint16_t addr) {
   return (uint8_t)(addr - AUDIO_REG_BASE);
@@ -237,32 +240,70 @@ void pb_audio_init(void) {
   memset(&s_wave, 0, sizeof(s_wave));
   memset(&s_noise, 0, sizeof(s_noise));
   memset(&s_stats, 0, sizeof(s_stats));
+  s_consecutive_partial_writes = 0;
+  s_requested = false;
   s_enabled = false;
 }
 
-void pb_audio_set_enabled(bool enabled) {
 #ifndef PB_DESKTOP
-  if (enabled && !s_enabled) {
-    s_enabled = speaker_stream_open(SpeakerPcmFormat_8kHz_8bit, 50);
-    if (!s_enabled) {
-      APP_LOG(APP_LOG_LEVEL_WARNING, "speaker stream unavailable");
-    } else {
-      APP_LOG(APP_LOG_LEVEL_INFO, "speaker stream enabled");
-    }
-  } else if (!enabled && s_enabled) {
+static bool prv_open_stream(void) {
+  if (s_enabled) {
+    return true;
+  }
+  s_enabled = speaker_stream_open(SpeakerPcmFormat_8kHz_8bit, 50);
+  if (!s_enabled) {
+    s_stats.stream_errors++;
+    APP_LOG(APP_LOG_LEVEL_WARNING, "speaker stream unavailable errors=%lu",
+            s_stats.stream_errors);
+    return false;
+  }
+  APP_LOG(APP_LOG_LEVEL_INFO, "speaker stream enabled");
+  return true;
+}
+
+static void prv_close_stream(const char *reason) {
+  if (s_enabled) {
     speaker_stream_close();
     s_enabled = false;
-    APP_LOG(APP_LOG_LEVEL_INFO, "speaker stream disabled");
+  }
+  if (reason) {
+    APP_LOG(APP_LOG_LEVEL_WARNING, "%s", reason);
+  }
+}
+#endif
+
+void pb_audio_set_enabled(bool enabled) {
+  s_requested = enabled;
+#ifndef PB_DESKTOP
+  if (!enabled) {
+    prv_close_stream("speaker stream disabled");
+  } else {
+    APP_LOG(APP_LOG_LEVEL_INFO, "speaker stream armed");
   }
 #else
   s_enabled = enabled;
 #endif
 }
 
+void pb_audio_suspend_stream(void) {
+#ifndef PB_DESKTOP
+  prv_close_stream(NULL);
+  s_consecutive_partial_writes = 0;
+#else
+  (void)s_enabled;
+#endif
+}
+
 void pb_audio_pump(void) {
-  if (!s_enabled) {
+  if (!s_requested) {
     return;
   }
+
+#ifndef PB_DESKTOP
+  if (!prv_open_stream()) {
+    return;
+  }
+#endif
 
   for (uint16_t i = 0; i < AUDIO_PUMP_SAMPLES; i++) {
     s_buffer[i] = prv_mix_sample();
@@ -274,15 +315,25 @@ void pb_audio_pump(void) {
   s_stats.last_write_size = written;
   if (written < sizeof(s_buffer)) {
     s_stats.partial_writes++;
+    s_consecutive_partial_writes++;
     if ((s_stats.partial_writes & 0x1F) == 1) {
       APP_LOG(APP_LOG_LEVEL_WARNING, "speaker partial write %lu/%u partials=%lu",
               written, (unsigned)sizeof(s_buffer),
               (unsigned long)s_stats.partial_writes);
     }
+    if (written == 0 ||
+        s_consecutive_partial_writes >= AUDIO_MAX_CONSECUTIVE_PARTIAL_WRITES) {
+      s_stats.stream_errors++;
+      prv_close_stream("speaker stream suspended after write backpressure");
+      return;
+    }
+  } else {
+    s_consecutive_partial_writes = 0;
   }
   if ((s_stats.pumps & 0x3Fu) == 1) {
-    APP_LOG(APP_LOG_LEVEL_INFO, "audio pumps=%lu partial=%lu last_write=%lu",
-            s_stats.pumps, s_stats.partial_writes, s_stats.last_write_size);
+    APP_LOG(APP_LOG_LEVEL_INFO, "audio pumps=%lu partial=%lu errors=%lu last_write=%lu",
+            s_stats.pumps, s_stats.partial_writes, s_stats.stream_errors,
+            s_stats.last_write_size);
   }
 #else
   s_stats.last_write_size = sizeof(s_buffer);
@@ -290,16 +341,15 @@ void pb_audio_pump(void) {
 }
 
 void pb_audio_deinit(void) {
+  s_requested = false;
 #ifndef PB_DESKTOP
-  if (s_enabled) {
-    speaker_stream_close();
-  }
+  prv_close_stream(NULL);
 #endif
   s_enabled = false;
 }
 
 bool pb_audio_enabled(void) {
-  return s_enabled;
+  return s_requested;
 }
 
 const PbAudioStats *pb_audio_stats(void) {
