@@ -23,7 +23,28 @@ case "$tetris_out" in
 esac
 
 if [ -f roms/pokered.gb ]; then
-  build/desktop_harness roms/pokered.gb 240
+  pokered_boot_out="$(build/desktop_harness roms/pokered.gb 240)"
+  echo "$pokered_boot_out"
+  case "$pokered_boot_out" in
+    *'title="POKEMON RED"'*'mbc=3 banks=64 save=32768'*)
+      ;;
+    *)
+      echo "unexpected Pokemon boot profile" >&2
+      exit 1
+      ;;
+  esac
+
+  pokered_title_out="$(build/desktop_harness roms/pokered.gb 1500 build/pokered-title.bmp)"
+  echo "$pokered_title_out"
+  case "$pokered_title_out" in
+    *'title="POKEMON RED"'*'hash=00ec8ed4'*)
+      ;;
+    *)
+      echo "unexpected Pokemon title frame hash" >&2
+      exit 1
+      ;;
+  esac
+  python3 tools/check_pokemon_title.py build/pokered-title.bmp
 fi
 
 pebble build
