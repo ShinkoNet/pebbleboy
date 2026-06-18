@@ -143,7 +143,7 @@ static void test_phone_fixed_bank_fill_size(void) {
          "phone switch bank line was unexpectedly present");
   expect(capture.count == 1, "switch bank request count mismatch");
   expect(capture.bank == 1 && capture.offset == PB_CART_LINE_SIZE &&
-         capture.size == PB_CART_LINE_SIZE, "switch bank did not request one 4 KiB line");
+         capture.size == PB_CART_LINE_SIZE, "switch bank did not request one cache line");
   expect(capture.demand, "switch bank request was not marked as demand");
   printf("cart cache phone fixed-bank fill test passed fixed=%u switch=%u\n",
          (unsigned)PB_CART_BANK_SIZE, (unsigned)PB_CART_LINE_SIZE);

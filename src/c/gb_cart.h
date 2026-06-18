@@ -15,7 +15,8 @@
 #endif
 #define PB_CART_CACHE_BYTES (PB_CART_BANK_SIZE * PB_CART_CACHE_BANKS)
 #ifndef PB_CART_LINE_SIZE
-#define PB_CART_LINE_SIZE 0x1000u
+/* Match the phone ROM data payload size so switch-bank fills need one data message. */
+#define PB_CART_LINE_SIZE 0x0200u
 #endif
 #define PB_CART_FILL_SIZE PB_CART_BANK_SIZE
 #define PB_CART_SLOT_SIZE PB_CART_LINE_SIZE

@@ -49,6 +49,7 @@ static bool s_phone_bank_load_pending;
 static uint16_t s_phone_bank_load_bank;
 static uint16_t s_phone_bank_load_offset;
 static uint16_t s_phone_bank_load_size;
+static bool s_phone_bank_load_demand;
 static uint64_t s_phone_bank_load_ms;
 
 typedef struct {
@@ -412,6 +413,7 @@ static bool prv_request_phone_bank(uint16_t bank, uint16_t offset, uint16_t size
     s_phone_bank_load_bank = bank;
     s_phone_bank_load_offset = offset;
     s_phone_bank_load_size = size;
+    s_phone_bank_load_demand = demand;
     s_phone_bank_load_ms = started_ms;
     if (demand) {
       snprintf(s_status, sizeof(s_status), "Loading bank %u", bank);
@@ -476,8 +478,8 @@ static void prv_maybe_flush_cart_ram(uint64_t now) {
   }
 }
 
-static void prv_maybe_prefetch_next_phone_fill(const PbPhoneEvent *event) {
-  if (!s_running || !s_cart || s_cart->mode != PB_CART_MODE_PHONE ||
+static void prv_maybe_prefetch_next_phone_fill(const PbPhoneEvent *event, bool after_demand) {
+  if (!after_demand || !s_running || !s_cart || s_cart->mode != PB_CART_MODE_PHONE ||
       pb_cart_paused(s_cart) || s_cart_ram_paused || s_phone_bank_load_pending) {
     return;
   }
@@ -520,10 +522,13 @@ static void prv_phone_event(const PbPhoneEvent *event, void *context) {
       break;
     case PB_PHONE_EVENT_BANK_READY:
       uint32_t latency_ms = 0;
+      bool completed_demand = false;
       if (s_phone_bank_load_pending && s_phone_bank_load_bank == event->bank &&
           s_phone_bank_load_offset == event->offset && s_phone_bank_load_size == event->size) {
         latency_ms = prv_elapsed_ms(s_phone_bank_load_ms);
+        completed_demand = s_phone_bank_load_demand;
         s_phone_bank_load_pending = false;
+        s_phone_bank_load_demand = false;
         s_cart->stats.last_load_ms = latency_ms;
       }
       APP_LOG(APP_LOG_LEVEL_INFO, "phone bank %u ready fill=%u size=%u latency_ms=%lu",
@@ -535,7 +540,7 @@ static void prv_phone_event(const PbPhoneEvent *event, void *context) {
         prv_set_status("Resumed");
         prv_schedule_frame_timer(1);
       }
-      prv_maybe_prefetch_next_phone_fill(event);
+      prv_maybe_prefetch_next_phone_fill(event, completed_demand);
       break;
     case PB_PHONE_EVENT_SRAM_LOAD_DATA:
       if (s_cart_ram && s_cart_ram_loading && event->bank == s_cart_ram_loading_bank &&

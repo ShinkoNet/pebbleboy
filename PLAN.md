@@ -105,10 +105,10 @@ Protocol shape:
 Watch -> Phone: ROM_INFO_REQUEST
 Phone -> Watch: ROM_INFO {size, sha1, title, cart_type}
 
-Watch -> Phone: ROM_BANK_REQUEST {bank}
-Phone -> Watch: ROM_BANK_BEGIN {bank, size}
+Watch -> Phone: ROM_BANK_REQUEST {bank, offset, size}
+Phone -> Watch: ROM_BANK_BEGIN {bank, offset, size}
 Phone -> Watch: ROM_BANK_DATA {bank, offset, bytes}
-Phone -> Watch: ROM_BANK_END {bank, sha1}
+Phone -> Watch: ROM_BANK_END {bank, offset, size, sha1}
 ```
 
 The emulator pauses on a cache miss, shows a small loading indicator if needed,
@@ -143,8 +143,13 @@ Cache policy:
 - Bank 0 is pinned.
 - The currently selected MBC bank is pinned while active.
 - Remaining slots are LRU.
-- After loading bank N, optionally prefetch N+1 if a free or low-value slot
-  exists.
+- The cache is subdivided into line slots for phone-backed ROMs. Fixed bank 0
+  can still be filled as one 16 KiB request, while switched banks use
+  AppMessage-sized demand fills so the emulator resumes after a short line
+  transfer instead of waiting for a whole bank.
+- After a demand fill, optionally prefetch one adjacent line if a free or
+  low-value slot exists. Do not chain prefetch completions into whole-bank
+  streaming, because demand misses must stay ahead of background lookahead.
 - MBC writes trigger cache selection and possible async loading.
 
 ## Memory Budget
