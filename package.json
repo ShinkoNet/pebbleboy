@@ -1,0 +1,42 @@
+{
+  "name": "pebbleboy",
+  "author": "shinko",
+  "version": "0.1.0",
+  "keywords": ["pebble-app", "emulator", "gameboy"],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Pebbleboy",
+    "uuid": "53852c6a-202c-4a64-ae41-a7ed891bd8cf",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "messageKeys": [
+      "PB_CMD",
+      "PB_BANK",
+      "PB_OFFSET",
+      "PB_SIZE",
+      "PB_DATA",
+      "PB_TITLE",
+      "PB_CART_TYPE",
+      "PB_SHA1",
+      "PB_STATUS",
+      "PB_SRAM_SIZE"
+    ],
+    "targetPlatforms": [
+      "emery"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "resources": {
+      "media": [
+        {
+          "type": "raw",
+          "name": "TETRIS_ROM",
+          "file": "data/tetris.gb"
+        }
+      ]
+    }
+  }
+}
+

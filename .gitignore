@@ -1,0 +1,17 @@
+build/
+node_modules/
+__pycache__/
+*.pyc
+/.lock-waf*
+/*.gb
+/*.gbc
+/*.gb:Zone.Identifier
+/*.gbc:Zone.Identifier
+resources/data/*.gb
+resources/data/*.gbc
+roms/*.gb
+roms/*.gbc
+*.pbw
+*.elf
+*.o
+*.d
