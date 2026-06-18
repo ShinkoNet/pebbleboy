@@ -5,16 +5,20 @@ cd "$(dirname "$0")/.."
 
 usage() {
   cat <<'EOF'
-usage: tools/launch-emu.sh [--no-build] ROM.gb
-       tools/launch-emu.sh [--no-build] --ROM.gb
-       tools/launch-emu.sh [--no-build] --rom ROM.gb
+usage: tools/launch-emu.sh [--no-build] [--vnc] ROM.gb
+       tools/launch-emu.sh [--no-build] [--vnc] --ROM.gb
+       tools/launch-emu.sh [--no-build] [--vnc] --rom ROM.gb
 
 Builds Pebbleboy, hosts the ROM over a local HTTP URL, configures pypkjs with
 that URL, and launches the visible Emery emulator with logs attached.
+
+By default this uses QEMU's native window. Use --vnc only for headless/VNC
+sessions such as screenshot smoke tests.
 EOF
 }
 
 build=1
+vnc=0
 rom_arg=
 
 while [ "$#" -gt 0 ]; do
@@ -25,6 +29,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-build)
       build=0
+      ;;
+    --vnc)
+      vnc=1
       ;;
     --rom)
       shift
@@ -102,4 +109,8 @@ echo "ROM URL: $rom_url"
 echo "Server log: $server_log"
 
 pebble kill || true
-pebble install --emulator emery --vnc --logs build/Pebbleboy.pbw
+if [ "$vnc" -eq 1 ]; then
+  pebble install --emulator emery --vnc --logs build/Pebbleboy.pbw
+else
+  pebble install --emulator emery --logs build/Pebbleboy.pbw
+fi
