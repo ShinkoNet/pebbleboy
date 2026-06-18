@@ -80,12 +80,19 @@ def read_png(path: Path) -> tuple[int, int, bytes]:
 
 def main() -> int:
     allow_loading = False
+    fullscreen = False
     args = sys.argv[1:]
-    if args and args[0] == "--allow-loading":
-        allow_loading = True
+    while args and args[0].startswith("--"):
+        if args[0] == "--allow-loading":
+            allow_loading = True
+        elif args[0] == "--fullscreen":
+            fullscreen = True
+        else:
+            print(f"unknown option: {args[0]}", file=sys.stderr)
+            return 2
         args = args[1:]
     if len(args) != 1:
-        print(f"usage: {sys.argv[0]} [--allow-loading] SCREENSHOT.png", file=sys.stderr)
+        print(f"usage: {sys.argv[0]} [--allow-loading] [--fullscreen] SCREENSHOT.png", file=sys.stderr)
         return 2
     width, height, rgba = read_png(Path(args[0]))
     colors = set()
@@ -120,6 +127,12 @@ def main() -> int:
     if width != 200 or height != 228:
         print("unexpected Emery screenshot dimensions", file=sys.stderr)
         return 1
+    if fullscreen:
+        active_fullscreen = len(colors) >= 2 and nonblack >= 25000 and outside_nonblack >= 5000
+        if not active_fullscreen:
+            print("screenshot does not show fullscreen Game Boy video", file=sys.stderr)
+            return 1
+        return 0
     active_video = len(viewport_colors) >= 2 and viewport_nonblack >= 5000
     loading_app = allow_loading and viewport_nonblack >= 5000 and outside_nonblack <= 2000
     if not active_video and not loading_app:
