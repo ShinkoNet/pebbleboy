@@ -12,10 +12,16 @@ var CMD = {
 };
 
 var BANK_SIZE = 16 * 1024;
-var MSG_CHUNK = 128;
+var MSG_CHUNK = 512;
 var CACHE_CHUNK = 8192;
+var MAX_SEND_RETRIES = 5;
 var romBytes = null;
 var romMeta = null;
+var appMessageQueue = [];
+var appMessageBusy = false;
+var romLoading = false;
+var romLoadUrl = null;
+var romLoadCallbacks = [];
 
 function settings() {
   return {
@@ -23,37 +29,85 @@ function settings() {
   };
 }
 
-function sendQueue(messages) {
-  if (!messages.length) {
+function pumpAppMessageQueue() {
+  if (appMessageBusy || !appMessageQueue.length) {
     return;
   }
-  Pebble.sendAppMessage(messages.shift(), function() {
-    sendQueue(messages);
+
+  appMessageBusy = true;
+  var item = appMessageQueue[0];
+  Pebble.sendAppMessage(item.message, function() {
+    appMessageQueue.shift();
+    appMessageBusy = false;
+    pumpAppMessageQueue();
   }, function() {
-    console.log('pebbleboy: appmessage send failed');
+    item.retries++;
+    appMessageBusy = false;
+    if (item.retries > MAX_SEND_RETRIES) {
+      console.log('pebbleboy: appmessage send failed permanently');
+      appMessageQueue.shift();
+      sendError('phone send failed');
+      pumpAppMessageQueue();
+      return;
+    }
+    console.log('pebbleboy: appmessage retry ' + item.retries);
+    setTimeout(pumpAppMessageQueue, 100 * item.retries);
   });
 }
 
+function sendQueue(messages) {
+  for (var i = 0; i < messages.length; i++) {
+    appMessageQueue.push({ message: messages[i], retries: 0 });
+  }
+  pumpAppMessageQueue();
+}
+
 function sendError(status) {
+  console.log('pebbleboy: ROM error ' + status);
   Pebble.sendAppMessage({ PB_CMD: CMD.ROM_ERROR, PB_STATUS: status }, null, null);
 }
 
+var BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
 function bytesToBase64(bytes) {
   var out = '';
-  for (var i = 0; i < bytes.length; i += 1024) {
-    var part = bytes.subarray(i, Math.min(i + 1024, bytes.length));
-    for (var j = 0; j < part.length; j++) {
-      out += String.fromCharCode(part[j]);
-    }
+  for (var i = 0; i < bytes.length; i += 3) {
+    var a = bytes[i];
+    var hasB = i + 1 < bytes.length;
+    var hasC = i + 2 < bytes.length;
+    var b = hasB ? bytes[i + 1] : 0;
+    var c = hasC ? bytes[i + 2] : 0;
+    out += BASE64_CHARS[a >> 2];
+    out += BASE64_CHARS[((a & 3) << 4) | (b >> 4)];
+    out += hasB ? BASE64_CHARS[((b & 15) << 2) | (c >> 6)] : '=';
+    out += hasC ? BASE64_CHARS[c & 63] : '=';
   }
-  return btoa(out);
+  return out;
 }
 
 function base64ToBytes(text) {
-  var bin = atob(text);
-  var out = new Uint8Array(bin.length);
-  for (var i = 0; i < bin.length; i++) {
-    out[i] = bin.charCodeAt(i) & 0xFF;
+  var clean = String(text).replace(/[^A-Za-z0-9+/=]/g, '');
+  var padding = 0;
+  if (clean.length && clean.charAt(clean.length - 1) === '=') {
+    padding++;
+  }
+  if (clean.length > 1 && clean.charAt(clean.length - 2) === '=') {
+    padding++;
+  }
+  var out = new Uint8Array((clean.length / 4) * 3 - padding);
+  var pos = 0;
+  for (var i = 0; i < clean.length; i += 4) {
+    var c0 = BASE64_CHARS.indexOf(clean.charAt(i));
+    var c1 = BASE64_CHARS.indexOf(clean.charAt(i + 1));
+    var c2 = clean.charAt(i + 2) === '=' ? 0 : BASE64_CHARS.indexOf(clean.charAt(i + 2));
+    var c3 = clean.charAt(i + 3) === '=' ? 0 : BASE64_CHARS.indexOf(clean.charAt(i + 3));
+    out[pos++] = (c0 << 2) | (c1 >> 4);
+    if (pos < out.length) {
+      out[pos++] = ((c1 & 15) << 4) | (c2 >> 2);
+    }
+    if (pos < out.length) {
+      out[pos++] = ((c2 & 3) << 6) | c3;
+    }
   }
   return out;
 }
@@ -143,45 +197,69 @@ function loadCached(url) {
 }
 
 function saveCached(url, bytes, meta) {
-  try {
-    var chunks = Math.ceil(bytes.length / CACHE_CHUNK);
-    for (var i = 0; i < chunks; i++) {
+  var chunks = Math.ceil(bytes.length / CACHE_CHUNK);
+  var cacheMeta = {
+    size: meta.size,
+    sha1: meta.sha1,
+    title: meta.title,
+    cartType: meta.cartType,
+    url: url,
+    chunks: chunks
+  };
+  var i = 0;
+
+  function saveNextChunk() {
+    try {
+      if (i >= chunks) {
+        localStorage.setItem('romMeta', JSON.stringify(cacheMeta));
+        console.log('pebbleboy: cached ROM chunks=' + chunks);
+        return;
+      }
       localStorage.setItem('romChunk' + i,
         bytesToBase64(bytes.subarray(i * CACHE_CHUNK, Math.min((i + 1) * CACHE_CHUNK, bytes.length))));
+      i++;
+      setTimeout(saveNextChunk, 0);
+    } catch (err) {
+      console.log('pebbleboy: cache save skipped: ' + err);
     }
-    meta.url = url;
-    meta.chunks = chunks;
-    localStorage.setItem('romMeta', JSON.stringify(meta));
-  } catch (err) {
-    console.log('pebbleboy: cache save skipped: ' + err);
   }
+
+  setTimeout(saveNextChunk, 0);
 }
 
 function fetchRom(url, cb) {
+  console.log('pebbleboy: fetching ROM ' + url);
   var xhr = new XMLHttpRequest();
   xhr.open('GET', url, true);
   xhr.responseType = 'arraybuffer';
   xhr.timeout = 20000;
   xhr.onload = function() {
-    if (xhr.status !== 200 || !xhr.response) {
-      cb('HTTP ' + xhr.status);
-      return;
+    try {
+      if (xhr.status !== 200 || !xhr.response) {
+        cb('HTTP ' + xhr.status);
+        return;
+      }
+      var bytes = new Uint8Array(xhr.response);
+      if (bytes.length < 0x150) {
+        cb('ROM too small');
+        return;
+      }
+      console.log('pebbleboy: fetched ' + bytes.length + ' bytes');
+      var meta = {
+        size: bytes.length,
+        sha1: sha1(bytes),
+        title: titleOf(bytes),
+        cartType: bytes[0x147],
+        url: url
+      };
+      romBytes = bytes;
+      romMeta = meta;
+      console.log('pebbleboy: ROM parsed ' + meta.title + ' sha1=' + meta.sha1);
+      cb(null);
+      saveCached(url, bytes, meta);
+    } catch (err) {
+      cb('ROM parse failed: ' + err);
     }
-    var bytes = new Uint8Array(xhr.response);
-    if (bytes.length < 0x150) {
-      cb('ROM too small');
-      return;
-    }
-    var meta = {
-      size: bytes.length,
-      sha1: sha1(bytes),
-      title: titleOf(bytes),
-      cartType: bytes[0x147]
-    };
-    romBytes = bytes;
-    romMeta = meta;
-    saveCached(url, bytes, meta);
-    cb(null);
   };
   xhr.onerror = xhr.ontimeout = function() { cb('ROM fetch failed'); };
   xhr.send();
@@ -201,7 +279,23 @@ function ensureRom(cb) {
     cb(null);
     return;
   }
-  fetchRom(url, cb);
+  if (romLoading && romLoadUrl === url) {
+    romLoadCallbacks.push(cb);
+    return;
+  }
+
+  romLoading = true;
+  romLoadUrl = url;
+  romLoadCallbacks = [cb];
+  fetchRom(url, function(err) {
+    var callbacks = romLoadCallbacks;
+    romLoading = false;
+    romLoadUrl = null;
+    romLoadCallbacks = [];
+    for (var i = 0; i < callbacks.length; i++) {
+      callbacks[i](err);
+    }
+  });
 }
 
 function sendInfo() {
@@ -217,6 +311,7 @@ function sendInfo() {
       PB_CART_TYPE: romMeta.cartType,
       PB_SHA1: romMeta.sha1
     }, null, function() { console.log('pebbleboy: info send failed'); });
+    console.log('pebbleboy: ROM info ' + romMeta.title + ' size=' + romMeta.size);
   });
 }
 
@@ -232,6 +327,7 @@ function sendBank(bank) {
       return;
     }
     var size = Math.min(BANK_SIZE, romBytes.length - start);
+    console.log('pebbleboy: bank request ' + bank + ' size=' + size);
     var messages = [{ PB_CMD: CMD.ROM_BANK_BEGIN, PB_BANK: bank, PB_SIZE: size }];
     for (var off = 0; off < size; off += MSG_CHUNK) {
       var end = Math.min(off + MSG_CHUNK, size);

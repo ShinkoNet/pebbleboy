@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 bash tools/run_tests.sh
+python3 tools/seed_phone_rom.py --clear
 
 log=build/pebbleboy-qemu.log
 : > "$log"

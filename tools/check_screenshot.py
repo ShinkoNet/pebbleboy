@@ -79,10 +79,15 @@ def read_png(path: Path) -> tuple[int, int, bytes]:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print(f"usage: {sys.argv[0]} SCREENSHOT.png", file=sys.stderr)
+    allow_loading = False
+    args = sys.argv[1:]
+    if args and args[0] == "--allow-loading":
+        allow_loading = True
+        args = args[1:]
+    if len(args) != 1:
+        print(f"usage: {sys.argv[0]} [--allow-loading] SCREENSHOT.png", file=sys.stderr)
         return 2
-    width, height, rgba = read_png(Path(sys.argv[1]))
+    width, height, rgba = read_png(Path(args[0]))
     colors = set()
     nonblack = 0
     viewport_colors = set()
@@ -115,10 +120,12 @@ def main() -> int:
     if width != 200 or height != 228:
         print("unexpected Emery screenshot dimensions", file=sys.stderr)
         return 1
-    if len(viewport_colors) < 2 or viewport_nonblack < 5000:
+    active_video = len(viewport_colors) >= 2 and viewport_nonblack >= 5000
+    loading_app = allow_loading and viewport_nonblack >= 5000 and outside_nonblack <= 2000
+    if not active_video and not loading_app:
         print("screenshot does not show active Game Boy video", file=sys.stderr)
         return 1
-    if outside_nonblack > 1000:
+    if outside_nonblack > 1000 and not loading_app:
         print("screenshot still looks like the Pebble launcher", file=sys.stderr)
         return 1
     return 0

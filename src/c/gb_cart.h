@@ -10,7 +10,7 @@
 #endif
 
 #define PB_CART_BANK_SIZE 0x4000u
-#define PB_CART_CACHE_BANKS 3
+#define PB_CART_CACHE_BANKS 4
 
 typedef enum {
   PB_CART_MODE_NONE = 0,
@@ -88,4 +88,3 @@ bool pb_cart_phone_data(PbCart *cart, uint16_t bank, uint16_t offset, const uint
 bool pb_cart_phone_end(PbCart *cart, uint16_t bank, uint16_t size);
 
 #endif
-

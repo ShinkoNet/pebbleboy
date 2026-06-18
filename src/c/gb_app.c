@@ -13,6 +13,7 @@
 
 #define FRAME_MS 33
 #define FRAMES_PER_TICK 2
+#define PHONE_INFO_RETRY_MS 2000
 #define MAX_LOCAL_SAVE_RAM (32u * 1024u)
 
 static Window *s_window;
@@ -28,6 +29,7 @@ static char s_status[80];
 static uint32_t s_frames;
 static uint64_t s_last_log_ms;
 static uint32_t s_last_log_frame;
+static uint64_t s_last_phone_info_request_ms;
 
 static uint64_t prv_now_ms(void) {
   time_t sec;
@@ -119,7 +121,11 @@ static bool prv_start_from_cart(const char *source_name) {
 
   size_t save_size = 0;
   if (gb_get_save_size_s(s_gb, &save_size) == 0 && save_size > 0) {
-    if (save_size <= MAX_LOCAL_SAVE_RAM) {
+    if (s_cart->mode == PB_CART_MODE_PHONE) {
+      APP_LOG(APP_LOG_LEVEL_WARNING,
+              "phone save sync not implemented; running without %u bytes of SRAM",
+              (unsigned)save_size);
+    } else if (save_size <= MAX_LOCAL_SAVE_RAM) {
       s_cart_ram = malloc(save_size);
       if (s_cart_ram) {
         memset(s_cart_ram, 0xFF, save_size);
@@ -169,6 +175,9 @@ static void prv_phone_event(const PbPhoneEvent *event, void *context) {
       s_phone_offer_seen = true;
       s_running = false;
       prv_free_save_ram();
+      APP_LOG(APP_LOG_LEVEL_INFO, "phone info title=%s size=%lu cart=%u",
+              event->title[0] ? event->title : "DMG ROM", event->size,
+              (unsigned)event->cart_type);
       if (pb_cart_init_phone(s_cart, event->size, prv_request_phone_bank, NULL)) {
         snprintf(s_status, sizeof(s_status), "Phone ROM %s",
                  event->title[0] ? event->title : "loading");
@@ -177,6 +186,8 @@ static void prv_phone_event(const PbPhoneEvent *event, void *context) {
       layer_mark_dirty(s_canvas);
       break;
     case PB_PHONE_EVENT_BANK_READY:
+      APP_LOG(APP_LOG_LEVEL_INFO, "phone bank %u ready size=%u",
+              (unsigned)event->bank, (unsigned)event->size);
       if (!s_running && event->bank == 0) {
         prv_start_from_cart("phone");
       } else if (s_cart && s_cart->mode == PB_CART_MODE_PHONE && !pb_cart_paused(s_cart)) {
@@ -209,6 +220,17 @@ static void prv_log_perf(void) {
   s_last_log_frame = s_frames;
 }
 
+static void prv_maybe_request_phone_info(uint64_t now) {
+  if (s_phone_offer_seen || (s_cart && s_cart->mode == PB_CART_MODE_PHONE)) {
+    return;
+  }
+  if (now - s_last_phone_info_request_ms < PHONE_INFO_RETRY_MS) {
+    return;
+  }
+  gb_phone_request_info();
+  s_last_phone_info_request_ms = now;
+}
+
 static bool prv_run_one_frame(void) {
   s_gb->direct.joypad = pb_input_joypad();
   if (!pb_cart_ensure_bank(s_cart, s_gb->selected_rom_bank) || pb_cart_paused(s_cart)) {
@@ -225,6 +247,7 @@ static bool prv_run_one_frame(void) {
 static void prv_frame_timer_cb(void *data) {
   (void)data;
   s_timer = app_timer_register(FRAME_MS, prv_frame_timer_cb, NULL);
+  prv_maybe_request_phone_info(prv_now_ms());
 
   if (s_running && !pb_cart_paused(s_cart)) {
     for (int i = 0; i < FRAMES_PER_TICK; i++) {
@@ -338,6 +361,7 @@ static void prv_window_load(Window *window) {
   }
   pb_cart_init_empty(s_cart);
   s_phone_offer_seen = false;
+  s_last_phone_info_request_ms = 0;
 
   gb_phone_init(s_cart, prv_phone_event, NULL);
 
@@ -348,6 +372,7 @@ static void prv_window_load(Window *window) {
   }
 
   gb_phone_request_info();
+  s_last_phone_info_request_ms = prv_now_ms();
 
 #ifdef PBL_TOUCH
   touch_service_subscribe(prv_touch_handler, NULL);
