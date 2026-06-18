@@ -25,6 +25,16 @@ cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
   -o build/cart_cache_test
 build/cart_cache_test
 
+cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -DPB_CART_CACHE_BANKS=3 -Isrc/c \
+  tools/cart_cache_profile.c src/c/gb_cart.c \
+  -o build/cart_cache_profile_3
+build/cart_cache_profile_3
+
+cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -DPB_CART_CACHE_BANKS=4 -Isrc/c \
+  tools/cart_cache_profile.c src/c/gb_cart.c \
+  -o build/cart_cache_profile_4
+build/cart_cache_profile_4
+
 cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
   tools/input_test.c src/c/gb_input.c \
   -o build/input_test
