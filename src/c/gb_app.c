@@ -594,6 +594,7 @@ static void prv_log_perf(void) {
     return;
   }
   const PbCartStats *stats = pb_cart_stats(s_cart);
+  const PbAudioStats *audio_stats = pb_audio_stats();
   uint32_t frame_delta = s_frames - s_last_log_frame;
   uint32_t ms_delta = (uint32_t)(now - s_last_log_ms);
   APP_LOG(APP_LOG_LEVEL_INFO,
@@ -602,6 +603,8 @@ static void prv_log_perf(void) {
           stats->hits, stats->misses, stats->loads, stats->phone_requests,
           (unsigned)stats->last_miss_bank, (unsigned)stats->last_load_bank,
           stats->last_load_ms, (unsigned)heap_bytes_free(), (unsigned)heap_bytes_used());
+  APP_LOG(APP_LOG_LEVEL_INFO, "audio pumps=%lu partial=%lu last_write=%lu",
+          audio_stats->pumps, audio_stats->partial_writes, audio_stats->last_write_size);
   s_last_log_ms = now;
   s_last_log_frame = s_frames;
 }

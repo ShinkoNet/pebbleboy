@@ -41,7 +41,7 @@ static PulseChannel s_pulse1;
 static PulseChannel s_pulse2;
 static WaveChannel s_wave;
 static NoiseChannel s_noise;
-static uint32_t s_partial_writes;
+static PbAudioStats s_stats;
 
 static uint8_t prv_idx(uint16_t addr) {
   return (uint8_t)(addr - AUDIO_REG_BASE);
@@ -236,7 +236,7 @@ void pb_audio_init(void) {
   memset(&s_pulse2, 0, sizeof(s_pulse2));
   memset(&s_wave, 0, sizeof(s_wave));
   memset(&s_noise, 0, sizeof(s_noise));
-  s_partial_writes = 0;
+  memset(&s_stats, 0, sizeof(s_stats));
   s_enabled = false;
 }
 
@@ -267,16 +267,25 @@ void pb_audio_pump(void) {
   for (uint16_t i = 0; i < AUDIO_PUMP_SAMPLES; i++) {
     s_buffer[i] = prv_mix_sample();
   }
+  s_stats.pumps++;
 
 #ifndef PB_DESKTOP
   uint32_t written = speaker_stream_write(s_buffer, sizeof(s_buffer));
+  s_stats.last_write_size = written;
   if (written < sizeof(s_buffer)) {
-    s_partial_writes++;
-    if ((s_partial_writes & 0x1F) == 1) {
-      APP_LOG(APP_LOG_LEVEL_WARNING, "speaker partial write %lu/%u",
-              written, (unsigned)sizeof(s_buffer));
+    s_stats.partial_writes++;
+    if ((s_stats.partial_writes & 0x1F) == 1) {
+      APP_LOG(APP_LOG_LEVEL_WARNING, "speaker partial write %lu/%u partials=%lu",
+              written, (unsigned)sizeof(s_buffer),
+              (unsigned long)s_stats.partial_writes);
     }
   }
+  if ((s_stats.pumps & 0x3Fu) == 1) {
+    APP_LOG(APP_LOG_LEVEL_INFO, "audio pumps=%lu partial=%lu last_write=%lu",
+            s_stats.pumps, s_stats.partial_writes, s_stats.last_write_size);
+  }
+#else
+  s_stats.last_write_size = sizeof(s_buffer);
 #endif
 }
 
@@ -291,6 +300,10 @@ void pb_audio_deinit(void) {
 
 bool pb_audio_enabled(void) {
   return s_enabled;
+}
+
+const PbAudioStats *pb_audio_stats(void) {
+  return &s_stats;
 }
 
 #ifdef PB_DESKTOP
