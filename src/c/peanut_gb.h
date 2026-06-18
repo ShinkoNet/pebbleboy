@@ -1207,7 +1207,10 @@ void __gb_write(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
 
 			for(i = 0; i < OAM_SIZE; i++)
 			{
-				gb->oam[i] = __gb_read(gb, dma_addr + i);
+				uint8_t dma_value = __gb_read(gb, dma_addr + i);
+				if(PEANUT_GB_SHOULD_PAUSE(gb))
+					return;
+				gb->oam[i] = dma_value;
 			}
 
 			return;
@@ -3282,6 +3285,9 @@ void __gb_step_cpu(struct gb_s *gb)
 		(gb->gb_error)(gb, GB_INVALID_OPCODE, gb->cpu_reg.pc.reg - 1);
 		PGB_UNREACHABLE();
 	}
+
+	if(PEANUT_GB_SHOULD_PAUSE(gb))
+		return;
 
 	do
 	{

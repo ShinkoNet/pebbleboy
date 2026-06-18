@@ -14,6 +14,8 @@
 #define FRAME_MS 33
 #define FRAMES_PER_TICK 2
 #define PHONE_INFO_RETRY_MS 2000
+#define CART_RAM_WINDOW_SIZE 0x2000u
+#define CART_RAM_BANK_NONE UINT16_MAX
 
 static Window *s_window;
 static Layer *s_canvas;
@@ -24,6 +26,9 @@ static bool s_running;
 static bool s_phone_offer_seen;
 static uint8_t *s_cart_ram;
 static size_t s_cart_ram_size;
+static size_t s_cart_ram_window_size;
+static uint16_t s_cart_ram_bank;
+static bool s_cart_ram_dirty;
 static char s_status[80];
 static uint32_t s_frames;
 static uint64_t s_last_log_ms;
@@ -47,6 +52,7 @@ typedef struct {
   struct cpu_registers_s cpu_reg;
   struct count_s counter;
   uint8_t hram_io[HRAM_IO_SIZE];
+  uint8_t oam[OAM_SIZE];
   uint8_t bg_palette[4];
   uint8_t sp_palette[8];
   uint8_t window_clear;
@@ -83,7 +89,16 @@ static uint8_t prv_rom_read(struct gb_s *gb, const uint_fast32_t addr) {
 static uint8_t prv_cart_ram_read(struct gb_s *gb, const uint_fast32_t addr) {
   (void)gb;
   if (addr < s_cart_ram_size && s_cart_ram) {
-    return s_cart_ram[addr];
+    uint16_t bank = (uint16_t)(addr / CART_RAM_WINDOW_SIZE);
+    if (bank != s_cart_ram_bank) {
+      memset(s_cart_ram, 0xFF, s_cart_ram_window_size);
+      s_cart_ram_bank = bank;
+      s_cart_ram_dirty = false;
+    }
+    size_t offset = (size_t)(addr % CART_RAM_WINDOW_SIZE);
+    if (offset < s_cart_ram_window_size) {
+      return s_cart_ram[offset];
+    }
   }
   return 0xFF;
 }
@@ -91,7 +106,17 @@ static uint8_t prv_cart_ram_read(struct gb_s *gb, const uint_fast32_t addr) {
 static void prv_cart_ram_write(struct gb_s *gb, const uint_fast32_t addr, const uint8_t value) {
   (void)gb;
   if (addr < s_cart_ram_size && s_cart_ram) {
-    s_cart_ram[addr] = value;
+    uint16_t bank = (uint16_t)(addr / CART_RAM_WINDOW_SIZE);
+    if (bank != s_cart_ram_bank) {
+      memset(s_cart_ram, 0xFF, s_cart_ram_window_size);
+      s_cart_ram_bank = bank;
+      s_cart_ram_dirty = false;
+    }
+    size_t offset = (size_t)(addr % CART_RAM_WINDOW_SIZE);
+    if (offset < s_cart_ram_window_size) {
+      s_cart_ram[offset] = value;
+      s_cart_ram_dirty = true;
+    }
   }
 }
 
@@ -123,6 +148,7 @@ static void prv_save_frame_checkpoint(void) {
   s_frame_checkpoint.cpu_reg = s_gb->cpu_reg;
   s_frame_checkpoint.counter = s_gb->counter;
   memcpy(s_frame_checkpoint.hram_io, s_gb->hram_io, sizeof(s_frame_checkpoint.hram_io));
+  memcpy(s_frame_checkpoint.oam, s_gb->oam, sizeof(s_frame_checkpoint.oam));
   memcpy(s_frame_checkpoint.bg_palette, s_gb->display.bg_palette,
          sizeof(s_frame_checkpoint.bg_palette));
   memcpy(s_frame_checkpoint.sp_palette, s_gb->display.sp_palette,
@@ -150,6 +176,7 @@ static void prv_restore_frame_checkpoint(void) {
   s_gb->cpu_reg = s_frame_checkpoint.cpu_reg;
   s_gb->counter = s_frame_checkpoint.counter;
   memcpy(s_gb->hram_io, s_frame_checkpoint.hram_io, sizeof(s_frame_checkpoint.hram_io));
+  memcpy(s_gb->oam, s_frame_checkpoint.oam, sizeof(s_frame_checkpoint.oam));
   memcpy(s_gb->display.bg_palette, s_frame_checkpoint.bg_palette,
          sizeof(s_frame_checkpoint.bg_palette));
   memcpy(s_gb->display.sp_palette, s_frame_checkpoint.sp_palette,
@@ -164,6 +191,9 @@ static void prv_free_save_ram(void) {
   free(s_cart_ram);
   s_cart_ram = NULL;
   s_cart_ram_size = 0;
+  s_cart_ram_window_size = 0;
+  s_cart_ram_bank = CART_RAM_BANK_NONE;
+  s_cart_ram_dirty = false;
 }
 
 static const char *prv_init_error_name(enum gb_init_error_e err) {
@@ -208,9 +238,21 @@ static bool prv_start_from_cart(const char *source_name) {
   size_t save_size = 0;
   if (gb_get_save_size_s(s_gb, &save_size) == 0 && save_size > 0) {
     if (s_cart->mode == PB_CART_MODE_PHONE) {
-      APP_LOG(APP_LOG_LEVEL_WARNING,
-              "phone save sync not implemented; running without %u bytes of SRAM",
-              (unsigned)save_size);
+      s_cart_ram_window_size = save_size < CART_RAM_WINDOW_SIZE ? save_size : CART_RAM_WINDOW_SIZE;
+      s_cart_ram = malloc(s_cart_ram_window_size);
+      if (s_cart_ram) {
+        s_cart_ram_size = save_size;
+        s_cart_ram_bank = CART_RAM_BANK_NONE;
+        memset(s_cart_ram, 0xFF, s_cart_ram_window_size);
+        APP_LOG(APP_LOG_LEVEL_INFO,
+                "phone SRAM window active: %u/%u bytes; persistence not implemented",
+                (unsigned)s_cart_ram_window_size, (unsigned)save_size);
+      } else {
+        s_cart_ram_window_size = 0;
+        APP_LOG(APP_LOG_LEVEL_WARNING,
+                "phone SRAM window allocation failed for %u bytes",
+                (unsigned)save_size);
+      }
     } else {
       APP_LOG(APP_LOG_LEVEL_WARNING, "save RAM unavailable for non-phone source: %u",
               (unsigned)save_size);
@@ -380,6 +422,10 @@ static void prv_frame_timer_cb(void *data) {
   s_timer = NULL;
   prv_schedule_frame_timer(FRAME_MS);
   prv_maybe_request_phone_info(prv_now_ms());
+
+  if (!s_running && s_cart && s_cart->mode == PB_CART_MODE_PHONE && !pb_cart_paused(s_cart)) {
+    prv_start_from_cart("phone");
+  }
 
   if (s_running && !pb_cart_paused(s_cart)) {
     for (int i = 0; i < FRAMES_PER_TICK; i++) {

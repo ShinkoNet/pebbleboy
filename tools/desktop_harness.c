@@ -90,9 +90,63 @@ static uint8_t *read_file(const char *path, size_t *size_out) {
   return buf;
 }
 
+static void write_le16(FILE *f, uint16_t value) {
+  fputc(value & 0xFF, f);
+  fputc((value >> 8) & 0xFF, f);
+}
+
+static void write_le32(FILE *f, uint32_t value) {
+  fputc(value & 0xFF, f);
+  fputc((value >> 8) & 0xFF, f);
+  fputc((value >> 16) & 0xFF, f);
+  fputc((value >> 24) & 0xFF, f);
+}
+
+static bool write_bmp(const char *path) {
+  FILE *f = fopen(path, "wb");
+  if (!f) {
+    perror(path);
+    return false;
+  }
+  const uint32_t row_size = PB_GB_LCD_W * 3;
+  const uint32_t image_size = row_size * PB_GB_LCD_H;
+  const uint32_t pixel_offset = 14 + 40;
+  const uint32_t file_size = pixel_offset + image_size;
+
+  fputc('B', f);
+  fputc('M', f);
+  write_le32(f, file_size);
+  write_le16(f, 0);
+  write_le16(f, 0);
+  write_le32(f, pixel_offset);
+
+  write_le32(f, 40);
+  write_le32(f, PB_GB_LCD_W);
+  write_le32(f, PB_GB_LCD_H);
+  write_le16(f, 1);
+  write_le16(f, 24);
+  write_le32(f, 0);
+  write_le32(f, image_size);
+  write_le32(f, 2835);
+  write_le32(f, 2835);
+  write_le32(f, 0);
+  write_le32(f, 0);
+
+  for (int y = PB_GB_LCD_H - 1; y >= 0; y--) {
+    for (uint8_t x = 0; x < PB_GB_LCD_W; x++) {
+      uint8_t pixel = (uint8_t)(255 - pb_video_get_pixel(x, (uint8_t)y) * 85);
+      fputc(pixel, f);
+      fputc(pixel, f);
+      fputc(pixel, f);
+    }
+  }
+  fclose(f);
+  return true;
+}
+
 int main(int argc, char **argv) {
   if (argc < 2) {
-    fprintf(stderr, "usage: %s ROM [frames]\n", argv[0]);
+    fprintf(stderr, "usage: %s ROM [frames] [frame.bmp]\n", argv[0]);
     return 1;
   }
   int frames = argc >= 3 ? atoi(argv[2]) : 120;
@@ -121,7 +175,9 @@ int main(int argc, char **argv) {
   }
   gb_init_lcd(&s_gb, lcd_line);
 
-  if (gb_get_save_size_s(&s_gb, &s_save_ram_size) == 0 && s_save_ram_size) {
+  if (getenv("PB_DESKTOP_NO_SAVE")) {
+    s_save_ram_size = 0;
+  } else if (gb_get_save_size_s(&s_gb, &s_save_ram_size) == 0 && s_save_ram_size) {
     s_save_ram = malloc(s_save_ram_size);
     if (!s_save_ram) {
       fprintf(stderr, "save RAM alloc failed: %zu\n", s_save_ram_size);
@@ -133,6 +189,12 @@ int main(int argc, char **argv) {
 
   for (int i = 0; i < frames; i++) {
     gb_run_frame(&s_gb);
+  }
+
+  if (argc >= 4 && !write_bmp(argv[3])) {
+    free(s_save_ram);
+    free(rom);
+    return 1;
   }
 
   char title[17];

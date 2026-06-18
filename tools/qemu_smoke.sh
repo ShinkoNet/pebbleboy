@@ -79,14 +79,22 @@ fi
 
 python3 tools/analyze_bank_log.py --expect-no-resource --expect-phone-title TETRIS --expect-phone-banks 0,1 "$log"
 
-sleep 2
+sleep "${PB_QEMU_EXTRA_WAIT:-5}"
 bridge_port="$(python3 - <<'PY'
 import json
 with open('/tmp/pb-emulator.json') as f:
     print(json.load(f)['emery']['4.15.0-dirty-local']['pypkjs']['port'])
 PY
 )"
-pebble screenshot --phone "localhost:${bridge_port}" build/pebbleboy-qemu.png
+for attempt in 1 2 3; do
+  if pebble screenshot --phone "localhost:${bridge_port}" build/pebbleboy-qemu.png; then
+    break
+  fi
+  if [ "$attempt" = 3 ]; then
+    exit 1
+  fi
+  sleep 2
+done
 python3 tools/check_screenshot.py build/pebbleboy-qemu.png
 
 cleanup

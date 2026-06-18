@@ -100,8 +100,12 @@ if ! grep -q "started POKEMON RED phone" "$log"; then
   echo "missing phone-backed Pokemon startup in $log" >&2
   exit 1
 fi
-if ! grep -Eq "started POKEMON RED phone, save=0, heap free=1[0-9]{4}" "$log"; then
-  echo "phone-backed Pokemon did not start with expected save-disabled heap margin" >&2
+if ! grep -q "phone SRAM window active: 8192/32768" "$log"; then
+  echo "phone-backed Pokemon did not initialize the expected SRAM window" >&2
+  exit 1
+fi
+if ! grep -Eq "started POKEMON RED phone, save=32768, heap free=[0-9]+" "$log"; then
+  echo "phone-backed Pokemon did not start with SRAM enabled" >&2
   exit 1
 fi
 if ! grep -q "fps=" "$log"; then
@@ -111,7 +115,7 @@ fi
 
 python3 tools/analyze_bank_log.py --expect-no-resource --expect-phone-title "POKEMON RED" "$log"
 
-sleep 5
+sleep "${PB_QEMU_PHONE_EXTRA_WAIT:-5}"
 bridge_port="$(python3 - <<'PY'
 import json
 with open('/tmp/pb-emulator.json') as f:
