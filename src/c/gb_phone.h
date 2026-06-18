@@ -22,14 +22,19 @@ enum {
 typedef enum {
   PB_PHONE_EVENT_INFO = 0,
   PB_PHONE_EVENT_BANK_READY,
+  PB_PHONE_EVENT_SRAM_LOAD_DATA,
+  PB_PHONE_EVENT_SRAM_SAVE_DONE,
   PB_PHONE_EVENT_ERROR,
 } PbPhoneEventType;
 
 typedef struct {
   PbPhoneEventType type;
   uint16_t bank;
+  uint16_t offset;
   uint32_t size;
   uint8_t cart_type;
+  const uint8_t *data;
+  uint16_t data_len;
   char title[17];
   char status[64];
 } PbPhoneEvent;
@@ -40,5 +45,8 @@ void gb_phone_init(PbCart *cart, PbPhoneEventCb event_cb, void *context);
 void gb_phone_deinit(void);
 bool gb_phone_request_info(void);
 bool gb_phone_request_bank(uint16_t bank, uint16_t offset, uint16_t size);
+bool gb_phone_request_sram_load(uint16_t bank, uint16_t size, uint32_t total_size);
+bool gb_phone_save_sram_bank(uint16_t bank, const uint8_t *data, uint16_t size,
+                             uint32_t total_size);
 
 #endif

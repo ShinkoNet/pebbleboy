@@ -14,8 +14,9 @@
 #define FRAME_MS 33
 #define FRAMES_PER_TICK 2
 #define PHONE_INFO_RETRY_MS 2000
-#define CART_RAM_WINDOW_SIZE 0x2000u
+#define CART_RAM_WINDOW_SIZE 0x1000u
 #define CART_RAM_BANK_NONE UINT16_MAX
+#define CART_RAM_SAVE_SETTLE_MS 3000
 
 static Window *s_window;
 static Layer *s_canvas;
@@ -29,6 +30,14 @@ static size_t s_cart_ram_size;
 static size_t s_cart_ram_window_size;
 static uint16_t s_cart_ram_bank;
 static bool s_cart_ram_dirty;
+static bool s_cart_ram_paused;
+static bool s_cart_ram_faulted;
+static bool s_cart_ram_loading;
+static bool s_cart_ram_saving;
+static uint16_t s_cart_ram_loading_bank;
+static uint16_t s_cart_ram_pending_bank;
+static uint16_t s_cart_ram_loaded_bytes;
+static uint64_t s_cart_ram_dirty_ms;
 static char s_status[80];
 static uint32_t s_frames;
 static uint64_t s_last_log_ms;
@@ -86,14 +95,87 @@ static uint8_t prv_rom_read(struct gb_s *gb, const uint_fast32_t addr) {
   return pb_cart_read(cart, (uint32_t)addr);
 }
 
+static void prv_cart_ram_show_status(const char *action, uint16_t bank) {
+  snprintf(s_status, sizeof(s_status), "%s SRAM %u", action, (unsigned)bank);
+  if (s_canvas) {
+    layer_mark_dirty(s_canvas);
+  }
+}
+
+static bool prv_start_cart_ram_load(uint16_t bank) {
+  if (!s_cart_ram || s_cart_ram_loading || s_cart_ram_saving) {
+    return false;
+  }
+  if (!gb_phone_request_sram_load(bank, (uint16_t)s_cart_ram_window_size,
+                                  (uint32_t)s_cart_ram_size)) {
+    return false;
+  }
+
+  memset(s_cart_ram, 0xFF, s_cart_ram_window_size);
+  s_cart_ram_bank = CART_RAM_BANK_NONE;
+  s_cart_ram_loading = true;
+  s_cart_ram_loading_bank = bank;
+  s_cart_ram_loaded_bytes = 0;
+  s_cart_ram_paused = true;
+  prv_cart_ram_show_status("Loading", bank);
+  APP_LOG(APP_LOG_LEVEL_INFO, "phone SRAM load requested bank %u size=%u",
+          (unsigned)bank, (unsigned)s_cart_ram_window_size);
+  return true;
+}
+
+static bool prv_start_cart_ram_save(uint16_t pending_bank) {
+  if (!s_cart_ram || s_cart_ram_bank == CART_RAM_BANK_NONE ||
+      s_cart_ram_loading || s_cart_ram_saving) {
+    return false;
+  }
+  if (!gb_phone_save_sram_bank(s_cart_ram_bank, s_cart_ram,
+                               (uint16_t)s_cart_ram_window_size,
+                               (uint32_t)s_cart_ram_size)) {
+    return false;
+  }
+
+  s_cart_ram_saving = true;
+  s_cart_ram_pending_bank = pending_bank;
+  s_cart_ram_paused = true;
+  prv_cart_ram_show_status("Saving", s_cart_ram_bank);
+  APP_LOG(APP_LOG_LEVEL_INFO, "phone SRAM save started bank %u size=%u",
+          (unsigned)s_cart_ram_bank, (unsigned)s_cart_ram_window_size);
+  return true;
+}
+
+static bool prv_cart_ram_select_bank(uint16_t bank) {
+  if (!s_cart_ram || !s_cart_ram_window_size) {
+    return false;
+  }
+  if (bank == s_cart_ram_bank && !s_cart_ram_loading && !s_cart_ram_saving) {
+    return true;
+  }
+
+  s_cart_ram_paused = true;
+  s_cart_ram_faulted = true;
+  s_cart_ram_pending_bank = bank;
+
+  if (s_cart_ram_saving || s_cart_ram_loading) {
+    return false;
+  }
+  if (s_cart_ram_dirty && s_cart_ram_bank != CART_RAM_BANK_NONE) {
+    if (!prv_start_cart_ram_save(bank)) {
+      prv_cart_ram_show_status("Saving", s_cart_ram_bank);
+    }
+    return false;
+  }
+  if (!prv_start_cart_ram_load(bank)) {
+    prv_cart_ram_show_status("Loading", bank);
+  }
+  return false;
+}
+
 static uint8_t prv_cart_ram_read(struct gb_s *gb, const uint_fast32_t addr) {
   (void)gb;
   if (addr < s_cart_ram_size && s_cart_ram) {
     uint16_t bank = (uint16_t)(addr / CART_RAM_WINDOW_SIZE);
-    if (bank != s_cart_ram_bank) {
-      memset(s_cart_ram, 0xFF, s_cart_ram_window_size);
-      s_cart_ram_bank = bank;
-      s_cart_ram_dirty = false;
+    if (!prv_cart_ram_select_bank(bank)) {
+      return 0xFF;
     }
     size_t offset = (size_t)(addr % CART_RAM_WINDOW_SIZE);
     if (offset < s_cart_ram_window_size) {
@@ -107,15 +189,14 @@ static void prv_cart_ram_write(struct gb_s *gb, const uint_fast32_t addr, const 
   (void)gb;
   if (addr < s_cart_ram_size && s_cart_ram) {
     uint16_t bank = (uint16_t)(addr / CART_RAM_WINDOW_SIZE);
-    if (bank != s_cart_ram_bank) {
-      memset(s_cart_ram, 0xFF, s_cart_ram_window_size);
-      s_cart_ram_bank = bank;
-      s_cart_ram_dirty = false;
+    if (!prv_cart_ram_select_bank(bank)) {
+      return;
     }
     size_t offset = (size_t)(addr % CART_RAM_WINDOW_SIZE);
     if (offset < s_cart_ram_window_size) {
       s_cart_ram[offset] = value;
       s_cart_ram_dirty = true;
+      s_cart_ram_dirty_ms = prv_now_ms();
     }
   }
 }
@@ -194,6 +275,14 @@ static void prv_free_save_ram(void) {
   s_cart_ram_window_size = 0;
   s_cart_ram_bank = CART_RAM_BANK_NONE;
   s_cart_ram_dirty = false;
+  s_cart_ram_paused = false;
+  s_cart_ram_faulted = false;
+  s_cart_ram_loading = false;
+  s_cart_ram_saving = false;
+  s_cart_ram_loading_bank = CART_RAM_BANK_NONE;
+  s_cart_ram_pending_bank = CART_RAM_BANK_NONE;
+  s_cart_ram_loaded_bytes = 0;
+  s_cart_ram_dirty_ms = 0;
 }
 
 static const char *prv_init_error_name(enum gb_init_error_e err) {
@@ -243,9 +332,11 @@ static bool prv_start_from_cart(const char *source_name) {
       if (s_cart_ram) {
         s_cart_ram_size = save_size;
         s_cart_ram_bank = CART_RAM_BANK_NONE;
+        s_cart_ram_loading_bank = CART_RAM_BANK_NONE;
+        s_cart_ram_pending_bank = CART_RAM_BANK_NONE;
         memset(s_cart_ram, 0xFF, s_cart_ram_window_size);
         APP_LOG(APP_LOG_LEVEL_INFO,
-                "phone SRAM window active: %u/%u bytes; persistence not implemented",
+                "phone SRAM window active: %u/%u bytes",
                 (unsigned)s_cart_ram_window_size, (unsigned)save_size);
       } else {
         s_cart_ram_window_size = 0;
@@ -290,7 +381,49 @@ void pb_core_rom_bank_changed(struct gb_s *gb) {
 }
 
 bool pb_core_should_pause(struct gb_s *gb) {
-  return gb == s_gb && s_cart && pb_cart_paused(s_cart);
+  return gb == s_gb && ((s_cart && pb_cart_paused(s_cart)) || s_cart_ram_paused);
+}
+
+static void prv_resume_cart_ram(void) {
+  s_cart_ram_paused = false;
+  s_cart_ram_faulted = false;
+  s_cart_ram_pending_bank = CART_RAM_BANK_NONE;
+  prv_set_status("Resumed");
+  prv_schedule_frame_timer(1);
+}
+
+static void prv_maybe_continue_cart_ram(void) {
+  if (!s_cart_ram_paused || s_cart_ram_loading || s_cart_ram_saving ||
+      s_cart_ram_pending_bank == CART_RAM_BANK_NONE) {
+    return;
+  }
+
+  uint16_t pending_bank = s_cart_ram_pending_bank;
+  if (pending_bank == s_cart_ram_bank) {
+    prv_resume_cart_ram();
+    return;
+  }
+  if (s_cart_ram_dirty && s_cart_ram_bank != CART_RAM_BANK_NONE) {
+    prv_start_cart_ram_save(pending_bank);
+  } else {
+    prv_start_cart_ram_load(pending_bank);
+  }
+}
+
+static void prv_maybe_flush_cart_ram(uint64_t now) {
+  if (!s_cart_ram || !s_cart_ram_dirty || s_cart_ram_bank == CART_RAM_BANK_NONE ||
+      s_cart_ram_paused || s_cart_ram_loading || s_cart_ram_saving) {
+    return;
+  }
+  if (now - s_cart_ram_dirty_ms < CART_RAM_SAVE_SETTLE_MS) {
+    return;
+  }
+
+  s_cart_ram_faulted = false;
+  if (!prv_start_cart_ram_save(s_cart_ram_bank)) {
+    APP_LOG(APP_LOG_LEVEL_WARNING, "phone SRAM save busy for bank %u",
+            (unsigned)s_cart_ram_bank);
+  }
 }
 
 static void prv_phone_event(const PbPhoneEvent *event, void *context) {
@@ -322,6 +455,48 @@ static void prv_phone_event(const PbPhoneEvent *event, void *context) {
       } else if (s_cart && s_cart->mode == PB_CART_MODE_PHONE && !pb_cart_paused(s_cart)) {
         prv_set_status("Resumed");
         prv_schedule_frame_timer(1);
+      }
+      break;
+    case PB_PHONE_EVENT_SRAM_LOAD_DATA:
+      if (s_cart_ram && s_cart_ram_loading && event->bank == s_cart_ram_loading_bank &&
+          event->offset < s_cart_ram_window_size) {
+        uint16_t len = event->data_len;
+        if (event->offset + len > s_cart_ram_window_size) {
+          len = (uint16_t)(s_cart_ram_window_size - event->offset);
+        }
+        memcpy(s_cart_ram + event->offset, event->data, len);
+        if (event->offset + len > s_cart_ram_loaded_bytes) {
+          s_cart_ram_loaded_bytes = event->offset + len;
+        }
+        if (s_cart_ram_loaded_bytes >= s_cart_ram_window_size) {
+          s_cart_ram_bank = s_cart_ram_loading_bank;
+          s_cart_ram_loading = false;
+          s_cart_ram_loading_bank = CART_RAM_BANK_NONE;
+          s_cart_ram_loaded_bytes = 0;
+          s_cart_ram_dirty = false;
+          APP_LOG(APP_LOG_LEVEL_INFO, "phone SRAM bank %u loaded",
+                  (unsigned)s_cart_ram_bank);
+          prv_resume_cart_ram();
+        }
+      }
+      break;
+    case PB_PHONE_EVENT_SRAM_SAVE_DONE:
+      if (s_cart_ram_saving && event->bank == s_cart_ram_bank) {
+        s_cart_ram_saving = false;
+        s_cart_ram_dirty = false;
+        APP_LOG(APP_LOG_LEVEL_INFO, "phone SRAM bank %u saved",
+                (unsigned)event->bank);
+        if (s_cart_ram_pending_bank != CART_RAM_BANK_NONE &&
+            s_cart_ram_pending_bank != s_cart_ram_bank) {
+          uint16_t pending_bank = s_cart_ram_pending_bank;
+          if (!prv_start_cart_ram_load(pending_bank)) {
+            s_cart_ram_paused = true;
+            s_cart_ram_pending_bank = pending_bank;
+            prv_cart_ram_show_status("Loading", pending_bank);
+          }
+        } else {
+          prv_resume_cart_ram();
+        }
       }
       break;
     case PB_PHONE_EVENT_ERROR:
@@ -401,13 +576,14 @@ static bool prv_run_one_frame(void) {
   s_gb->gb_frame = false;
 
   while (!s_gb->gb_frame) {
-    if (pb_cart_paused(s_cart) || !prv_ensure_cpu_fetch_window()) {
+    if (pb_cart_paused(s_cart) || s_cart_ram_paused || !prv_ensure_cpu_fetch_window()) {
       return false;
     }
     pb_cart_clear_read_fault(s_cart);
+    s_cart_ram_faulted = false;
     prv_save_frame_checkpoint();
     __gb_step_cpu(s_gb);
-    if (pb_cart_read_faulted(s_cart) || pb_cart_paused(s_cart)) {
+    if (pb_cart_read_faulted(s_cart) || pb_cart_paused(s_cart) || s_cart_ram_faulted) {
       prv_restore_frame_checkpoint();
       return false;
     }
@@ -421,13 +597,15 @@ static void prv_frame_timer_cb(void *data) {
   (void)data;
   s_timer = NULL;
   prv_schedule_frame_timer(FRAME_MS);
-  prv_maybe_request_phone_info(prv_now_ms());
+  uint64_t now = prv_now_ms();
+  prv_maybe_request_phone_info(now);
+  prv_maybe_continue_cart_ram();
 
   if (!s_running && s_cart && s_cart->mode == PB_CART_MODE_PHONE && !pb_cart_paused(s_cart)) {
     prv_start_from_cart("phone");
   }
 
-  if (s_running && !pb_cart_paused(s_cart)) {
+  if (s_running && !pb_cart_paused(s_cart) && !s_cart_ram_paused) {
     for (int i = 0; i < FRAMES_PER_TICK; i++) {
       if (!prv_run_one_frame()) {
         break;
@@ -435,6 +613,7 @@ static void prv_frame_timer_cb(void *data) {
     }
     pb_audio_pump();
     prv_log_perf();
+    prv_maybe_flush_cart_ram(prv_now_ms());
   }
 
   if (s_canvas) {
@@ -446,7 +625,7 @@ static void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   pb_video_render(ctx, bounds);
 
-  if (!s_running || !s_cart || pb_cart_paused(s_cart)) {
+  if (!s_running || !s_cart || pb_cart_paused(s_cart) || s_cart_ram_paused) {
     graphics_context_set_text_color(ctx, GColorWhite);
     graphics_draw_text(ctx, s_status, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
                        GRect(4, PBL_DISPLAY_HEIGHT - 34, PBL_DISPLAY_WIDTH - 8, 30),

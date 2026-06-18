@@ -14,6 +14,7 @@ var CMD = {
 var BANK_SIZE = 16 * 1024;
 var MSG_CHUNK = 512;
 var CACHE_CHUNK = 8192;
+var SRAM_PAGE_SIZE = 4096;
 var MAX_SEND_RETRIES = 5;
 var romBytes = null;
 var romMeta = null;
@@ -227,10 +228,130 @@ function saveCached(url, bytes, meta) {
   setTimeout(saveNextChunk, 0);
 }
 
+function clearCachedRom() {
+  try {
+    var meta = JSON.parse(localStorage.getItem('romMeta') || 'null');
+    if (meta && meta.chunks) {
+      for (var i = 0; i < meta.chunks; i++) {
+        localStorage.removeItem('romChunk' + i);
+      }
+    }
+    localStorage.removeItem('romMeta');
+  } catch (err) {
+    localStorage.removeItem('romMeta');
+  }
+  romBytes = null;
+  romMeta = null;
+}
+
+function sramKey(parts) {
+  if (!romMeta || !romMeta.sha1) {
+    return null;
+  }
+  return ['sram', romMeta.sha1].concat(parts).join(':');
+}
+
+function payloadToBytes(payload) {
+  if (!payload) {
+    return new Uint8Array(0);
+  }
+  if (payload instanceof Uint8Array) {
+    return payload;
+  }
+  return new Uint8Array(payload);
+}
+
+function isAllFF(bytes) {
+  for (var i = 0; i < bytes.length; i++) {
+    if (bytes[i] !== 0xFF) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function loadSramChunk(bank, offset, len) {
+  var key = sramKey(['bank', bank, 'chunk', Math.floor(offset / MSG_CHUNK)]);
+  if (!key) {
+    var missing = new Uint8Array(len);
+    for (var m = 0; m < missing.length; m++) {
+      missing[m] = 0xFF;
+    }
+    return missing;
+  }
+  var stored = localStorage.getItem(key);
+  if (!stored) {
+    var blank = new Uint8Array(len);
+    for (var i = 0; i < blank.length; i++) {
+      blank[i] = 0xFF;
+    }
+    return blank;
+  }
+  var bytes = base64ToBytes(stored);
+  if (bytes.length === len) {
+    return bytes;
+  }
+  var out = new Uint8Array(len);
+  for (var i = 0; i < out.length; i++) {
+    out[i] = 0xFF;
+  }
+  out.set(bytes.subarray(0, Math.min(bytes.length, len)));
+  return out;
+}
+
+function saveSramChunk(bank, offset, totalSize, payload) {
+  if (!romMeta || !romMeta.sha1) {
+    return;
+  }
+  var bytes = payloadToBytes(payload);
+  var metaKey = sramKey(['meta']);
+  localStorage.setItem(metaKey, JSON.stringify({
+    size: totalSize || 0,
+    chunkSize: MSG_CHUNK
+  }));
+
+  var key = sramKey(['bank', bank, 'chunk', Math.floor(offset / MSG_CHUNK)]);
+  if (isAllFF(bytes)) {
+    localStorage.removeItem(key);
+  } else {
+    localStorage.setItem(key, bytesToBase64(bytes));
+  }
+}
+
+function sendSramLoad(bank, requestSize) {
+  ensureRom(function(err) {
+    if (err) {
+      sendError(err);
+      return;
+    }
+    var size = requestSize || SRAM_PAGE_SIZE;
+    var messages = [];
+    for (var off = 0; off < size; off += MSG_CHUNK) {
+      var len = Math.min(MSG_CHUNK, size - off);
+      messages.push({
+        PB_CMD: CMD.SRAM_LOAD_DATA,
+        PB_BANK: bank,
+        PB_OFFSET: off,
+        PB_DATA: Array.prototype.slice.call(loadSramChunk(bank, off, len))
+      });
+    }
+    console.log('pebbleboy: SRAM load bank ' + bank + ' size=' + size);
+    sendQueue(messages);
+  });
+}
+
 function bytesFromFetchText(text) {
   var marker = 'PEBBLEBOY_ROM_BASE64\n';
   if (text.indexOf(marker) === 0) {
     return base64ToBytes(text.slice(marker.length));
+  }
+  var clean = String(text).replace(/\s+/g, '');
+  if (clean.length >= 4 && clean.length % 4 === 0 &&
+      /^[A-Za-z0-9+/]+={0,2}$/.test(clean)) {
+    var decoded = base64ToBytes(clean);
+    if (decoded.length >= 0x150) {
+      return decoded;
+    }
   }
   var bytes = new Uint8Array(text.length);
   for (var i = 0; i < text.length; i++) {
@@ -415,6 +536,10 @@ Pebble.addEventListener('appmessage', function(e) {
     sendInfo();
   } else if (p.PB_CMD === CMD.ROM_BANK_REQUEST) {
     sendBank(p.PB_BANK | 0, p.PB_OFFSET | 0, p.PB_SIZE | 0);
+  } else if (p.PB_CMD === CMD.SRAM_LOAD_REQUEST) {
+    sendSramLoad(p.PB_BANK | 0, p.PB_SIZE | 0);
+  } else if (p.PB_CMD === CMD.SRAM_SAVE) {
+    saveSramChunk(p.PB_BANK | 0, p.PB_OFFSET | 0, p.PB_SRAM_SIZE | 0, p.PB_DATA);
   }
 });
 
@@ -422,22 +547,36 @@ Pebble.addEventListener('ready', function() {
   console.log('pebbleboy phone service ready');
 });
 
-var CONFIG_HTML =
-  '<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width">' +
-  '<style>body{font-family:sans-serif;margin:1em;background:#f7f7f7;color:#111}' +
-  'input{width:100%;padding:.6em;margin:.4em 0 1em;box-sizing:border-box}' +
-  'button{width:100%;padding:.8em;background:#111;color:white;border:0;font-size:1em}</style>' +
-  '</head><body><h3>Pebbleboy</h3>' +
-  '<label>Phone-backed ROM URL</label>' +
-  '<input id="u" placeholder="https://example.test/rom.gb" value="__URL__">' +
-  '<button onclick="done()">Save</button>' +
-  '<script>function done(){location.href="pebblejs://close#"+encodeURIComponent(' +
-  'JSON.stringify({romUrl:document.getElementById("u").value.trim()}))}</' +
-  'script></body></html>';
+function htmlAttr(text) {
+  return String(text || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function configHtml() {
+  return '<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width">' +
+    '<style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:0;' +
+    'background:#f6f7f9;color:#111}main{padding:18px}h1{font-size:22px;margin:0 0 16px}' +
+    'label{display:block;font-size:13px;font-weight:600;margin:14px 0 6px}' +
+    'input[type=url],input[type=text]{width:100%;padding:12px;border:1px solid #c9ced6;' +
+    'border-radius:6px;box-sizing:border-box;font-size:15px;background:white}' +
+    '.hint{font-size:12px;line-height:1.35;color:#4b5563;margin:8px 0 0}' +
+    '.row{display:flex;gap:10px;align-items:center;margin:16px 0}.row input{width:auto}' +
+    'button{width:100%;padding:13px;background:#111827;color:white;border:0;border-radius:6px;' +
+    'font-size:16px;font-weight:600}</style></head><body><main><h1>Pebbleboy</h1>' +
+    '<label for="u">ROM URL</label>' +
+    '<input id="u" type="url" inputmode="url" placeholder="https://pastebin.com/raw/..." ' +
+    'value="' + htmlAttr(settings().romUrl) + '">' +
+    '<p class="hint">Use a direct .gb URL, a raw Pastebin URL containing base64, or text starting ' +
+    'with PEBBLEBOY_ROM_BASE64.</p>' +
+    '<label class="row"><input id="c" type="checkbox"> Clear cached ROM after save</label>' +
+    '<button onclick="done()">Save</button></main>' +
+    '<script>function done(){location.href="pebblejs://close#"+encodeURIComponent(' +
+    'JSON.stringify({romUrl:document.getElementById("u").value.trim(),' +
+    'clear:document.getElementById("c").checked}))}</' + 'script></body></html>';
+}
 
 Pebble.addEventListener('showConfiguration', function() {
-  var html = CONFIG_HTML.replace('__URL__', settings().romUrl);
-  Pebble.openURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  Pebble.openURL('data:text/html;charset=utf-8,' + encodeURIComponent(configHtml()));
 });
 
 Pebble.addEventListener('webviewclosed', function(e) {
@@ -446,9 +585,14 @@ Pebble.addEventListener('webviewclosed', function(e) {
   }
   try {
     var cfg = JSON.parse(decodeURIComponent(e.response));
+    var oldUrl = settings().romUrl;
     localStorage.setItem('romUrl', cfg.romUrl || '');
-    romBytes = null;
-    romMeta = null;
+    if (cfg.clear || oldUrl !== (cfg.romUrl || '')) {
+      clearCachedRom();
+    } else {
+      romBytes = null;
+      romMeta = null;
+    }
   } catch (err) {
     console.log('pebbleboy: bad config response');
   }

@@ -100,12 +100,12 @@ if ! grep -q "started POKEMON RED phone" "$log"; then
   echo "missing phone-backed Pokemon startup in $log" >&2
   exit 1
 fi
-if ! grep -q "phone SRAM window active: 8192/32768" "$log"; then
+if ! grep -q "phone SRAM window active: 4096/32768" "$log"; then
   echo "phone-backed Pokemon did not initialize the expected SRAM window" >&2
   exit 1
 fi
-if ! grep -Eq "started POKEMON RED phone, save=32768, heap free=[0-9]+" "$log"; then
-  echo "phone-backed Pokemon did not start with SRAM enabled" >&2
+if ! grep -Eq "started POKEMON RED phone, save=32768, heap free=([4-9][0-9]{3}|[1-9][0-9]{4,})" "$log"; then
+  echo "phone-backed Pokemon did not start with SRAM enabled and usable heap headroom" >&2
   exit 1
 fi
 if ! grep -q "fps=" "$log"; then
@@ -122,7 +122,15 @@ with open('/tmp/pb-emulator.json') as f:
     print(json.load(f)['emery']['4.15.0-dirty-local']['pypkjs']['port'])
 PY
 )"
-pebble screenshot --phone "localhost:${bridge_port}" "$screenshot"
+for attempt in 1 2 3; do
+  if pebble screenshot --phone "localhost:${bridge_port}" "$screenshot"; then
+    break
+  fi
+  if [ "$attempt" = 3 ]; then
+    exit 1
+  fi
+  sleep 2
+done
 python3 tools/check_screenshot.py --allow-loading "$screenshot"
 
 cleanup
