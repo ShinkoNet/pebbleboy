@@ -14,6 +14,9 @@ var CMD = {
 var BANK_SIZE = 16 * 1024;
 var MSG_CHUNK = 512;
 var CACHE_CHUNK = 8192;
+var CACHE_SAVE_INITIAL_DELAY_MS = 5000;
+var CACHE_SAVE_IDLE_DELAY_MS = 250;
+var CACHE_SAVE_CHUNK_DELAY_MS = 25;
 var SRAM_PAGE_SIZE = 4096;
 var MAX_SEND_RETRIES = 5;
 var romBytes = null;
@@ -23,6 +26,7 @@ var appMessageBusy = false;
 var romLoading = false;
 var romLoadUrl = null;
 var romLoadCallbacks = [];
+var cacheSaveSerial = 0;
 
 function settings() {
   var scaleMode = localStorage.getItem('scaleMode') || '1x';
@@ -208,6 +212,8 @@ function loadCached(url) {
 }
 
 function saveCached(url, bytes, meta) {
+  cacheSaveSerial++;
+  var serial = cacheSaveSerial;
   var chunks = Math.ceil(bytes.length / CACHE_CHUNK);
   var cacheMeta = {
     size: meta.size,
@@ -220,6 +226,13 @@ function saveCached(url, bytes, meta) {
   var i = 0;
 
   function saveNextChunk() {
+    if (serial !== cacheSaveSerial) {
+      return;
+    }
+    if (appMessageBusy || appMessageQueue.length) {
+      setTimeout(saveNextChunk, CACHE_SAVE_IDLE_DELAY_MS);
+      return;
+    }
     try {
       if (i >= chunks) {
         localStorage.setItem('romMeta', JSON.stringify(cacheMeta));
@@ -229,13 +242,13 @@ function saveCached(url, bytes, meta) {
       localStorage.setItem('romChunk' + i,
         bytesToBase64(bytes.subarray(i * CACHE_CHUNK, Math.min((i + 1) * CACHE_CHUNK, bytes.length))));
       i++;
-      setTimeout(saveNextChunk, 0);
+      setTimeout(saveNextChunk, CACHE_SAVE_CHUNK_DELAY_MS);
     } catch (err) {
       console.log('pebbleboy: cache save skipped: ' + err);
     }
   }
 
-  setTimeout(saveNextChunk, 0);
+  setTimeout(saveNextChunk, CACHE_SAVE_INITIAL_DELAY_MS);
 }
 
 function clearCachedRom() {
