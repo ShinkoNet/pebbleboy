@@ -31,6 +31,9 @@ static uint64_t s_last_log_ms;
 static uint32_t s_last_log_frame;
 static uint64_t s_last_phone_info_request_ms;
 
+static void prv_frame_timer_cb(void *data);
+static void prv_schedule_frame_timer(uint32_t delay_ms);
+
 static uint64_t prv_now_ms(void) {
   time_t sec;
   uint16_t ms;
@@ -192,6 +195,7 @@ static void prv_phone_event(const PbPhoneEvent *event, void *context) {
         prv_start_from_cart("phone");
       } else if (s_cart && s_cart->mode == PB_CART_MODE_PHONE && !pb_cart_paused(s_cart)) {
         prv_set_status("Resumed");
+        prv_schedule_frame_timer(1);
       }
       break;
     case PB_PHONE_EVENT_ERROR:
@@ -231,6 +235,13 @@ static void prv_maybe_request_phone_info(uint64_t now) {
   s_last_phone_info_request_ms = now;
 }
 
+static void prv_schedule_frame_timer(uint32_t delay_ms) {
+  if (s_timer) {
+    app_timer_cancel(s_timer);
+  }
+  s_timer = app_timer_register(delay_ms, prv_frame_timer_cb, NULL);
+}
+
 static bool prv_run_one_frame(void) {
   s_gb->direct.joypad = pb_input_joypad();
   if (!pb_cart_ensure_bank(s_cart, s_gb->selected_rom_bank) || pb_cart_paused(s_cart)) {
@@ -246,7 +257,8 @@ static bool prv_run_one_frame(void) {
 
 static void prv_frame_timer_cb(void *data) {
   (void)data;
-  s_timer = app_timer_register(FRAME_MS, prv_frame_timer_cb, NULL);
+  s_timer = NULL;
+  prv_schedule_frame_timer(FRAME_MS);
   prv_maybe_request_phone_info(prv_now_ms());
 
   if (s_running && !pb_cart_paused(s_cart)) {
@@ -378,7 +390,7 @@ static void prv_window_load(Window *window) {
   touch_service_subscribe(prv_touch_handler, NULL);
 #endif
 
-  s_timer = app_timer_register(FRAME_MS, prv_frame_timer_cb, NULL);
+  prv_schedule_frame_timer(FRAME_MS);
 }
 
 static void prv_window_unload(Window *window) {

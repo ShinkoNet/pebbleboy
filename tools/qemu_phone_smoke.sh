@@ -37,6 +37,7 @@ for _ in $(seq 1 240); do
   if grep -q "started POKEMON RED phone" "$log" &&
      grep -q "phone bank 1 ready" "$log" &&
      grep -q "phone bank 4 ready" "$log" &&
+     grep -q "phone bank 28 ready" "$log" &&
      grep -q "fps=" "$log"; then
     break
   fi
@@ -70,8 +71,16 @@ if ! grep -q "phone bank 4 ready" "$log"; then
   echo "missing later streamed switch bank completion in $log" >&2
   exit 1
 fi
+if ! grep -q "phone bank 28 ready" "$log"; then
+  echo "missing high-bank streamed completion in $log" >&2
+  exit 1
+fi
 if ! grep -q "started POKEMON RED phone" "$log"; then
   echo "missing phone-backed Pokemon startup in $log" >&2
+  exit 1
+fi
+if ! grep -Eq "started POKEMON RED phone, save=0, heap free=1[0-9]{4}" "$log"; then
+  echo "phone-backed Pokemon did not start with expected save-disabled heap margin" >&2
   exit 1
 fi
 if ! grep -q "fps=" "$log"; then
