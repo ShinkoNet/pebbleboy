@@ -52,6 +52,13 @@ static AudioStats stats_for_buffer(void) {
   return stats;
 }
 
+static void test_output_format(void) {
+  size_t size = 0;
+  (void)pb_audio_debug_buffer(&size);
+  expect(pb_audio_debug_sample_rate() == 16000, "audio sample rate is not 16 kHz");
+  expect(size == 528, "audio pump is not one 33 ms 16 kHz block");
+}
+
 static void enable_master(uint8_t route_mask) {
   pb_audio_init();
   pb_audio_set_enabled(true);
@@ -118,6 +125,7 @@ static void test_silence_pump(void) {
 }
 
 int main(void) {
+  test_output_format();
   test_pulse();
   test_wave();
   test_noise();

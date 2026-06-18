@@ -26,6 +26,7 @@ const PbAudioStats *pb_audio_stats(void);
 
 #ifdef PB_DESKTOP
 const int8_t *pb_audio_debug_buffer(size_t *size_out);
+uint32_t pb_audio_debug_sample_rate(void);
 #endif
 
 #endif

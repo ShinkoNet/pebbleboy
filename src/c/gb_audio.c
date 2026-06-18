@@ -8,8 +8,9 @@
 
 #define AUDIO_REG_BASE 0xFF10u
 #define AUDIO_REG_COUNT 0x30u
-#define AUDIO_SAMPLE_RATE 8000u
-#define AUDIO_PUMP_SAMPLES 264u
+#define AUDIO_SAMPLE_RATE 16000u
+#define AUDIO_PUMP_MS 33u
+#define AUDIO_PUMP_SAMPLES ((AUDIO_SAMPLE_RATE * AUDIO_PUMP_MS) / 1000u)
 #define AUDIO_PHASE_ONE 65536u
 #define AUDIO_WAVE_PHASE_ONE (32u * AUDIO_PHASE_ONE)
 #define AUDIO_ENV_TICK_SAMPLES (AUDIO_SAMPLE_RATE / 64u)
@@ -250,14 +251,14 @@ static bool prv_open_stream(void) {
   if (s_enabled) {
     return true;
   }
-  s_enabled = speaker_stream_open(SpeakerPcmFormat_8kHz_8bit, 50);
+  s_enabled = speaker_stream_open(SpeakerPcmFormat_16kHz_8bit, 50);
   if (!s_enabled) {
     s_stats.stream_errors++;
     APP_LOG(APP_LOG_LEVEL_WARNING, "speaker stream unavailable errors=%lu",
             s_stats.stream_errors);
     return false;
   }
-  APP_LOG(APP_LOG_LEVEL_INFO, "speaker stream enabled");
+  APP_LOG(APP_LOG_LEVEL_INFO, "speaker stream enabled 16kHz 8-bit");
   return true;
 }
 
@@ -382,6 +383,10 @@ const int8_t *pb_audio_debug_buffer(size_t *size_out) {
     *size_out = sizeof(s_buffer);
   }
   return s_buffer;
+}
+
+uint32_t pb_audio_debug_sample_rate(void) {
+  return AUDIO_SAMPLE_RATE;
 }
 #endif
 
