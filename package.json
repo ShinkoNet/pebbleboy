@@ -29,14 +29,7 @@
       "watchface": false
     },
     "resources": {
-      "media": [
-        {
-          "type": "raw",
-          "name": "TETRIS_ROM",
-          "file": "data/tetris.gb"
-        }
-      ]
+      "media": []
     }
   }
 }
-

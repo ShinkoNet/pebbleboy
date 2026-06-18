@@ -227,36 +227,89 @@ function saveCached(url, bytes, meta) {
   setTimeout(saveNextChunk, 0);
 }
 
+function bytesFromFetchText(text) {
+  var marker = 'PEBBLEBOY_ROM_BASE64\n';
+  if (text.indexOf(marker) === 0) {
+    return base64ToBytes(text.slice(marker.length));
+  }
+  var bytes = new Uint8Array(text.length);
+  for (var i = 0; i < text.length; i++) {
+    bytes[i] = text.charCodeAt(i) & 0xFF;
+  }
+  return bytes;
+}
+
+function finishFetchRom(url, bytes, cb) {
+  if (bytes.length < 0x150) {
+    cb('ROM too small');
+    return;
+  }
+  console.log('pebbleboy: fetched ' + bytes.length + ' bytes');
+  var meta = {
+    size: bytes.length,
+    sha1: sha1(bytes),
+    title: titleOf(bytes),
+    cartType: bytes[0x147],
+    url: url
+  };
+  romBytes = bytes;
+  romMeta = meta;
+  console.log('pebbleboy: ROM parsed ' + meta.title + ' sha1=' + meta.sha1);
+  cb(null);
+  saveCached(url, bytes, meta);
+}
+
+function fetchRomText(url, cb) {
+  var xhr = new XMLHttpRequest();
+  xhr.open('GET', url, true);
+  if (xhr.overrideMimeType) {
+    xhr.overrideMimeType('text/plain; charset=x-user-defined');
+  }
+  xhr.timeout = 20000;
+  xhr.onload = function() {
+    try {
+      if (xhr.status !== 200) {
+        cb('HTTP ' + xhr.status);
+        return;
+      }
+      finishFetchRom(url, bytesFromFetchText(xhr.responseText || ''), cb);
+    } catch (err) {
+      cb('ROM parse failed: ' + err);
+    }
+  };
+  xhr.onerror = xhr.ontimeout = function() { cb('ROM fetch failed'); };
+  xhr.send();
+}
+
 function fetchRom(url, cb) {
   console.log('pebbleboy: fetching ROM ' + url);
   var xhr = new XMLHttpRequest();
   xhr.open('GET', url, true);
-  xhr.responseType = 'arraybuffer';
+  try {
+    xhr.responseType = 'arraybuffer';
+  } catch (err) {
+    fetchRomText(url, cb);
+    return;
+  }
   xhr.timeout = 20000;
   xhr.onload = function() {
     try {
-      if (xhr.status !== 200 || !xhr.response) {
+      if (xhr.status !== 200) {
         cb('HTTP ' + xhr.status);
+        return;
+      }
+      if (!xhr.response) {
+        console.log('pebbleboy: arraybuffer empty, retrying as text');
+        fetchRomText(url, cb);
         return;
       }
       var bytes = new Uint8Array(xhr.response);
       if (bytes.length < 0x150) {
-        cb('ROM too small');
+        console.log('pebbleboy: arraybuffer too small, retrying as text');
+        fetchRomText(url, cb);
         return;
       }
-      console.log('pebbleboy: fetched ' + bytes.length + ' bytes');
-      var meta = {
-        size: bytes.length,
-        sha1: sha1(bytes),
-        title: titleOf(bytes),
-        cartType: bytes[0x147],
-        url: url
-      };
-      romBytes = bytes;
-      romMeta = meta;
-      console.log('pebbleboy: ROM parsed ' + meta.title + ' sha1=' + meta.sha1);
-      cb(null);
-      saveCached(url, bytes, meta);
+      finishFetchRom(url, bytes, cb);
     } catch (err) {
       cb('ROM parse failed: ' + err);
     }

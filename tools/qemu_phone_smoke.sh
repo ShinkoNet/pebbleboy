@@ -3,24 +3,35 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+bash tools/run_tests.sh
+
 if [ ! -f roms/pokered.gb ]; then
   echo "missing roms/pokered.gb; phone streaming smoke needs a local large test ROM" >&2
   exit 1
 fi
 
-bash tools/run_tests.sh
-
 mkdir -p build
 log=build/pebbleboy-phone-qemu.log
 screenshot=build/pebbleboy-phone-qemu.png
+server_log=build/rom-server-phone-qemu.log
 : > "$log"
+: > "$server_log"
 
-rom_url="${PB_PHONE_ROM_URL:-phone-cache://pokered.gb}"
+rom_path="$(python3 -c 'from pathlib import Path; print(Path("roms/pokered.gb").resolve())')"
+rom_base="$(basename "$rom_path")"
+url_path="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$rom_base")"
+port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+rom_url="${PB_PHONE_ROM_URL:-http://127.0.0.1:${port}/${url_path}}"
 
 pebble kill || true
 
 log_pid=
+server_pid=
 cleanup() {
+  if [ -n "${server_pid:-}" ] && kill -0 "$server_pid" 2>/dev/null; then
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+  fi
   if [ -n "${log_pid:-}" ] && kill -0 "$log_pid" 2>/dev/null; then
     kill "$log_pid" 2>/dev/null || true
     wait "$log_pid" 2>/dev/null || true
@@ -28,7 +39,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-python3 tools/seed_phone_rom.py "$rom_url" --rom-file roms/pokered.gb
+if [ -z "${PB_PHONE_ROM_URL:-}" ]; then
+  python3 tools/rom_http_server.py "$port" "$rom_path" > "$server_log" 2>&1 &
+  server_pid=$!
+  sleep 0.3
+fi
+
+python3 tools/seed_phone_rom.py "$rom_url"
 
 pebble install --emulator emery --vnc --logs build/Pebbleboy.pbw > "$log" 2>&1 &
 log_pid=$!
@@ -57,6 +74,10 @@ if ! grep -q "App install succeeded." "$log"; then
 fi
 if ! grep -q "phone info title=POKEMON RED" "$log"; then
   echo "missing phone ROM info log in $log" >&2
+  exit 1
+fi
+if grep -q "started TETRIS local" "$log"; then
+  echo "phone smoke unexpectedly started bundled Tetris" >&2
   exit 1
 fi
 if ! grep -q "phone bank 0 ready" "$log"; then
@@ -88,7 +109,7 @@ if ! grep -q "fps=" "$log"; then
   exit 1
 fi
 
-python3 tools/analyze_bank_log.py "$log"
+python3 tools/analyze_bank_log.py --expect-no-resource --expect-phone-title "POKEMON RED" "$log"
 
 sleep 5
 bridge_port="$(python3 - <<'PY'

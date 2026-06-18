@@ -14,7 +14,6 @@
 #define FRAME_MS 33
 #define FRAMES_PER_TICK 2
 #define PHONE_INFO_RETRY_MS 2000
-#define MAX_LOCAL_SAVE_RAM (32u * 1024u)
 
 static Window *s_window;
 static Layer *s_canvas;
@@ -128,14 +127,8 @@ static bool prv_start_from_cart(const char *source_name) {
       APP_LOG(APP_LOG_LEVEL_WARNING,
               "phone save sync not implemented; running without %u bytes of SRAM",
               (unsigned)save_size);
-    } else if (save_size <= MAX_LOCAL_SAVE_RAM) {
-      s_cart_ram = malloc(save_size);
-      if (s_cart_ram) {
-        memset(s_cart_ram, 0xFF, save_size);
-        s_cart_ram_size = save_size;
-      }
     } else {
-      APP_LOG(APP_LOG_LEVEL_WARNING, "save RAM too large for local heap: %u",
+      APP_LOG(APP_LOG_LEVEL_WARNING, "save RAM unavailable for non-phone source: %u",
               (unsigned)save_size);
     }
   }
@@ -175,9 +168,11 @@ static void prv_phone_event(const PbPhoneEvent *event, void *context) {
   (void)context;
   switch (event->type) {
     case PB_PHONE_EVENT_INFO:
+      if (s_cart && s_cart->mode == PB_CART_MODE_PHONE) {
+        APP_LOG(APP_LOG_LEVEL_INFO, "ignoring duplicate phone ROM info");
+        break;
+      }
       s_phone_offer_seen = true;
-      APP_LOG(APP_LOG_LEVEL_INFO, "switching from %s to phone ROM",
-              s_status[0] ? s_status : "local ROM");
       s_running = false;
       prv_free_save_ram();
       APP_LOG(APP_LOG_LEVEL_INFO, "phone info title=%s size=%lu cart=%u",
@@ -201,10 +196,10 @@ static void prv_phone_event(const PbPhoneEvent *event, void *context) {
       }
       break;
     case PB_PHONE_EVENT_ERROR:
-      if (s_phone_offer_seen || (s_cart && s_cart->mode == PB_CART_MODE_PHONE)) {
+      if (s_cart && s_cart->mode == PB_CART_MODE_PHONE) {
         pb_cart_set_error(s_cart, event->status);
-        prv_set_status(event->status);
       }
+      prv_set_status(event->status[0] ? event->status : "No ROM URL");
       break;
   }
 }
@@ -379,13 +374,7 @@ static void prv_window_load(Window *window) {
   s_last_phone_info_request_ms = 0;
 
   gb_phone_init(s_cart, prv_phone_event, NULL);
-
-  if (pb_cart_init_resource(s_cart, RESOURCE_ID_TETRIS_ROM)) {
-    prv_start_from_cart("local");
-  } else {
-    prv_set_status(s_cart->error[0] ? s_cart->error : "No local ROM");
-  }
-
+  prv_set_status("Loading ROM URL");
   gb_phone_request_info();
   s_last_phone_info_request_ms = prv_now_ms();
 

@@ -32,11 +32,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("log")
     parser.add_argument("--expect-local-tetris", action="store_true")
+    parser.add_argument("--expect-no-resource", action="store_true")
+    parser.add_argument("--expect-phone-title")
+    parser.add_argument("--expect-phone-banks")
     args = parser.parse_args()
 
     loads = collections.defaultdict(list)
     phone_requests = []
     started_tetris = False
+    phone_titles = []
     phone_offer = False
     phone_start = False
 
@@ -48,6 +52,9 @@ def main():
                 phone_offer = True
             if "started " in line and " phone," in line:
                 phone_start = True
+                title_match = re.search(r"started (.+) phone,", line)
+                if title_match:
+                    phone_titles.append(title_match.group(1))
 
             load_match = LOAD_RE.search(line)
             if load_match:
@@ -77,6 +84,18 @@ def main():
             return fail(f"expected local Tetris resource banks 0,1; saw {bank_set(resource_banks)}")
         if phone_offer or phone_start or phone_requests:
             return fail("local Tetris smoke unexpectedly accepted or requested a phone ROM")
+
+    if args.expect_no_resource and loads["resource"]:
+        return fail(f"expected no resource ROM loads; saw {bank_set(loads['resource'])}")
+
+    if args.expect_phone_title and args.expect_phone_title not in phone_titles:
+        return fail(f"expected phone title {args.expect_phone_title}; saw {phone_titles or ['none']}")
+
+    if args.expect_phone_banks:
+        expected = {int(part) for part in args.expect_phone_banks.split(",") if part}
+        actual = set(loads["phone"])
+        if actual != expected:
+            return fail(f"expected phone banks {bank_set(expected)}; saw {bank_set(actual)}")
 
     return 0
 
