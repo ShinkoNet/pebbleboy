@@ -3,11 +3,32 @@
 #include <string.h>
 
 #ifdef PB_DESKTOP
-#include <stdio.h>
-#define PB_LOG(fmt, ...) fprintf(stderr, "cart: " fmt "\n", ##__VA_ARGS__)
+#define PB_LOG(fmt, ...)
 #else
 #define PB_LOG(fmt, ...) APP_LOG(APP_LOG_LEVEL_INFO, "cart: " fmt, ##__VA_ARGS__)
 #endif
+
+#ifndef PB_DESKTOP
+static const char *prv_mode_name(PbCartMode mode) {
+  switch (mode) {
+    case PB_CART_MODE_RESOURCE:
+      return "resource";
+    case PB_CART_MODE_PHONE:
+      return "phone";
+    case PB_CART_MODE_MEMORY:
+      return "memory";
+    case PB_CART_MODE_NONE:
+    default:
+      return "none";
+  }
+}
+#endif
+
+static void prv_note_bank(uint64_t *mask, uint16_t bank) {
+  if (bank < 64) {
+    *mask |= ((uint64_t)1) << bank;
+  }
+}
 
 static uint16_t prv_bank_count(uint32_t rom_size) {
   return (uint16_t)((rom_size + PB_CART_BANK_SIZE - 1) / PB_CART_BANK_SIZE);
@@ -119,6 +140,10 @@ static bool prv_load_bank(PbCart *cart, uint16_t bank) {
   slot->received = size;
   slot->last_used = ++cart->tick;
   cart->stats.loads++;
+  cart->stats.last_load_bank = bank;
+  prv_note_bank(&cart->stats.load_bank_mask, bank);
+  PB_LOG("%s bank %u loaded size=%u", prv_mode_name(cart->mode), (unsigned)bank,
+         (unsigned)size);
   return true;
 }
 
@@ -180,6 +205,8 @@ static void prv_request_phone_bank(PbCart *cart, uint16_t bank) {
   cart->paused = true;
   cart->pending_bank = bank;
   cart->stats.phone_requests++;
+  prv_note_bank(&cart->stats.request_bank_mask, bank);
+  PB_LOG("phone request bank %u", (unsigned)bank);
   if (cart->request_cb) {
     cart->request_cb(bank, cart->request_context);
   }
@@ -290,9 +317,11 @@ bool pb_cart_phone_end(PbCart *cart, uint16_t bank, uint16_t size) {
   slot->loading = false;
   slot->last_used = ++cart->tick;
   cart->stats.loads++;
+  cart->stats.last_load_bank = bank;
+  prv_note_bank(&cart->stats.load_bank_mask, bank);
+  PB_LOG("phone bank %u loaded size=%u", (unsigned)bank, (unsigned)expected);
   if (cart->pending_bank == bank) {
     pb_cart_resume(cart);
   }
   return true;
 }
-

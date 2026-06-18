@@ -176,6 +176,8 @@ static void prv_phone_event(const PbPhoneEvent *event, void *context) {
   switch (event->type) {
     case PB_PHONE_EVENT_INFO:
       s_phone_offer_seen = true;
+      APP_LOG(APP_LOG_LEVEL_INFO, "switching from %s to phone ROM",
+              s_status[0] ? s_status : "local ROM");
       s_running = false;
       prv_free_save_ram();
       APP_LOG(APP_LOG_LEVEL_INFO, "phone info title=%s size=%lu cart=%u",
@@ -216,9 +218,10 @@ static void prv_log_perf(void) {
   uint32_t frame_delta = s_frames - s_last_log_frame;
   uint32_t ms_delta = (uint32_t)(now - s_last_log_ms);
   APP_LOG(APP_LOG_LEVEL_INFO,
-          "fps=%u cache h=%lu m=%lu loads=%lu req=%lu heap free=%u used=%u",
+          "fps=%u cache h=%lu m=%lu loads=%lu req=%lu last_miss=%u last_load=%u heap free=%u used=%u",
           (unsigned)((frame_delta * 1000u) / (ms_delta ? ms_delta : 1)),
           stats->hits, stats->misses, stats->loads, stats->phone_requests,
+          (unsigned)stats->last_miss_bank, (unsigned)stats->last_load_bank,
           (unsigned)heap_bytes_free(), (unsigned)heap_bytes_used());
   s_last_log_ms = now;
   s_last_log_frame = s_frames;

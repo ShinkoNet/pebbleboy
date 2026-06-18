@@ -38,6 +38,30 @@ static void lcd_line(struct gb_s *gb, const uint8_t *pixels, const uint_fast8_t 
   pb_video_draw_line(pixels, (uint8_t)line);
 }
 
+static void format_bank_mask(uint64_t mask, char *out, size_t out_size) {
+  size_t pos = 0;
+  bool first = true;
+  if (out_size == 0) {
+    return;
+  }
+  out[0] = '\0';
+  for (int bank = 0; bank < 64; bank++) {
+    if (!(mask & (((uint64_t)1) << bank))) {
+      continue;
+    }
+    int written = snprintf(out + pos, out_size - pos, "%s%d", first ? "" : ",", bank);
+    if (written < 0 || (size_t)written >= out_size - pos) {
+      out[out_size - 1] = '\0';
+      return;
+    }
+    pos += (size_t)written;
+    first = false;
+  }
+  if (first) {
+    snprintf(out, out_size, "none");
+  }
+}
+
 static uint8_t *read_file(const char *path, size_t *size_out) {
   FILE *f = fopen(path, "rb");
   if (!f) {
@@ -114,10 +138,14 @@ int main(int argc, char **argv) {
   char title[17];
   gb_get_rom_name(&s_gb, title);
   const PbCartStats *stats = pb_cart_stats(&s_cart);
-  printf("rom=%s title=\"%s\" frames=%d mbc=%d banks=%u save=%zu hash=%08x hits=%u misses=%u loads=%u\n",
+  char load_banks[192];
+  char request_banks[192];
+  format_bank_mask(stats->load_bank_mask, load_banks, sizeof(load_banks));
+  format_bank_mask(stats->request_bank_mask, request_banks, sizeof(request_banks));
+  printf("rom=%s title=\"%s\" frames=%d mbc=%d banks=%u save=%zu hash=%08x hits=%u misses=%u loads=%u load_banks=%s request_banks=%s\n",
          argv[1], title, frames, (int)s_gb.mbc, (unsigned)s_cart.bank_count,
          s_save_ram_size, pb_video_hash(), (unsigned)stats->hits,
-         (unsigned)stats->misses, (unsigned)stats->loads);
+         (unsigned)stats->misses, (unsigned)stats->loads, load_banks, request_banks);
 
   free(s_save_ram);
   free(rom);

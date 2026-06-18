@@ -28,6 +28,9 @@ typedef struct {
   uint32_t phone_requests;
   uint32_t failed_loads;
   uint16_t last_miss_bank;
+  uint16_t last_load_bank;
+  uint64_t load_bank_mask;
+  uint64_t request_bank_mask;
   uint32_t last_load_ms;
 } PbCartStats;
 

@@ -51,6 +51,8 @@ if ! grep -q "fps=" "$log"; then
   exit 1
 fi
 
+python3 tools/analyze_bank_log.py --expect-local-tetris "$log"
+
 sleep 2
 bridge_port="$(python3 - <<'PY'
 import json
