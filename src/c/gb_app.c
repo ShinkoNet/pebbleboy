@@ -440,9 +440,12 @@ static void prv_phone_event(const PbPhoneEvent *event, void *context) {
       s_phone_offer_seen = true;
       s_running = false;
       prv_free_save_ram();
-      APP_LOG(APP_LOG_LEVEL_INFO, "phone info title=%s size=%lu cart=%u",
+      APP_LOG(APP_LOG_LEVEL_INFO, "phone info title=%s size=%lu cart=%u scale=%u",
               event->title[0] ? event->title : "DMG ROM", event->size,
-              (unsigned)event->cart_type);
+              (unsigned)event->cart_type, (unsigned)event->video_scale);
+      pb_video_set_scale(event->video_scale == PB_VIDEO_SCALE_FULLSCREEN
+                             ? PB_VIDEO_SCALE_FULLSCREEN
+                             : PB_VIDEO_SCALE_1X);
       pb_audio_set_enabled(event->audio_enabled);
       if (pb_cart_init_phone(s_cart, event->size, prv_request_phone_bank, NULL)) {
         snprintf(s_status, sizeof(s_status), "Phone ROM %s",

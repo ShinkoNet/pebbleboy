@@ -5,9 +5,9 @@ cd "$(dirname "$0")/.."
 
 usage() {
   cat <<'EOF'
-usage: tools/launch-emu.sh [--no-build] [--vnc] [--audio] ROM.gb
-       tools/launch-emu.sh [--no-build] [--vnc] [--audio] --ROM.gb
-       tools/launch-emu.sh [--no-build] [--vnc] [--audio] --rom ROM.gb
+usage: tools/launch-emu.sh [--no-build] [--vnc] [--audio] [--scale 1x|fullscreen] ROM.gb
+       tools/launch-emu.sh [--no-build] [--vnc] [--audio] [--scale 1x|fullscreen] --ROM.gb
+       tools/launch-emu.sh [--no-build] [--vnc] [--audio] [--scale 1x|fullscreen] --rom ROM.gb
 
 Builds Pebbleboy, hosts the ROM over a local HTTP URL, configures pypkjs with
 that URL, and launches the visible Emery emulator with logs attached.
@@ -20,6 +20,7 @@ EOF
 build=1
 vnc=0
 audio=0
+scale=1x
 rom_arg=
 
 while [ "$#" -gt 0 ]; do
@@ -39,6 +40,25 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-audio)
       audio=0
+      ;;
+    --scale)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "--scale needs 1x or fullscreen" >&2
+        exit 1
+      fi
+      case "$1" in
+        1x|fullscreen)
+          scale="$1"
+          ;;
+        *)
+          echo "--scale needs 1x or fullscreen" >&2
+          exit 1
+          ;;
+      esac
+      ;;
+    --fullscreen)
+      scale=fullscreen
       ;;
     --rom)
       shift
@@ -116,9 +136,10 @@ if [ "$audio" -eq 1 ]; then
 else
   seed_args+=(--audio-disabled)
 fi
-python3 tools/seed_phone_rom.py "${seed_args[@]}" "$rom_url"
+python3 tools/seed_phone_rom.py --scale "$scale" "${seed_args[@]}" "$rom_url"
 
 echo "ROM URL: $rom_url"
+echo "Scale: $scale"
 echo "Server log: $server_log"
 
 pebble kill || true

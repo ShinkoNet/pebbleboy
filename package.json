@@ -24,7 +24,8 @@
       "PB_SHA1",
       "PB_STATUS",
       "PB_SRAM_SIZE",
-      "PB_AUDIO"
+      "PB_AUDIO",
+      "PB_SCALE"
     ],
     "targetPlatforms": [
       "emery"

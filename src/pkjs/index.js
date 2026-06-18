@@ -25,9 +25,11 @@ var romLoadUrl = null;
 var romLoadCallbacks = [];
 
 function settings() {
+  var scaleMode = localStorage.getItem('scaleMode') || '1x';
   return {
     romUrl: localStorage.getItem('romUrl') || '',
-    audioEnabled: localStorage.getItem('audioEnabled') === '1'
+    audioEnabled: localStorage.getItem('audioEnabled') === '1',
+    scaleMode: scaleMode === 'fullscreen' ? 'fullscreen' : '1x'
   };
 }
 
@@ -485,7 +487,8 @@ function sendInfo() {
       PB_TITLE: romMeta.title,
       PB_CART_TYPE: romMeta.cartType,
       PB_SHA1: romMeta.sha1,
-      PB_AUDIO: settings().audioEnabled ? 1 : 0
+      PB_AUDIO: settings().audioEnabled ? 1 : 0,
+      PB_SCALE: settings().scaleMode === 'fullscreen' ? 1 : 0
     }, null, function() { console.log('pebbleboy: info send failed'); });
     console.log('pebbleboy: ROM info ' + romMeta.title + ' size=' + romMeta.size);
   });
@@ -555,11 +558,12 @@ function htmlAttr(text) {
 }
 
 function configHtml() {
+  var cfg = settings();
   return '<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width">' +
     '<style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:0;' +
     'background:#f6f7f9;color:#111}main{padding:18px}h1{font-size:22px;margin:0 0 16px}' +
     'label{display:block;font-size:13px;font-weight:600;margin:14px 0 6px}' +
-    'input[type=url],input[type=text]{width:100%;padding:12px;border:1px solid #c9ced6;' +
+    'input[type=url],input[type=text],select{width:100%;padding:12px;border:1px solid #c9ced6;' +
     'border-radius:6px;box-sizing:border-box;font-size:15px;background:white}' +
     '.hint{font-size:12px;line-height:1.35;color:#4b5563;margin:8px 0 0}' +
     '.row{display:flex;gap:10px;align-items:center;margin:16px 0}.row input{width:auto}' +
@@ -567,15 +571,22 @@ function configHtml() {
     'font-size:16px;font-weight:600}</style></head><body><main><h1>Pebbleboy</h1>' +
     '<label for="u">ROM URL</label>' +
     '<input id="u" type="url" inputmode="url" placeholder="https://pastebin.com/raw/..." ' +
-    'value="' + htmlAttr(settings().romUrl) + '">' +
+    'value="' + htmlAttr(cfg.romUrl) + '">' +
     '<p class="hint">Use a direct .gb URL, a raw Pastebin URL containing base64, or text starting ' +
     'with PEBBLEBOY_ROM_BASE64.</p>' +
+    '<label for="s">Display scale</label>' +
+    '<select id="s">' +
+    '<option value="1x"' + (cfg.scaleMode === '1x' ? ' selected' : '') + '>1:1 centered</option>' +
+    '<option value="fullscreen"' + (cfg.scaleMode === 'fullscreen' ? ' selected' : '') +
+    '>Fill screen</option>' +
+    '</select>' +
     '<label class="row"><input id="a" type="checkbox" ' +
-    (settings().audioEnabled ? 'checked' : '') + '> Enable speaker audio</label>' +
+    (cfg.audioEnabled ? 'checked' : '') + '> Enable speaker audio</label>' +
     '<label class="row"><input id="c" type="checkbox"> Clear cached ROM after save</label>' +
     '<button onclick="done()">Save</button></main>' +
     '<script>function done(){location.href="pebblejs://close#"+encodeURIComponent(' +
     'JSON.stringify({romUrl:document.getElementById("u").value.trim(),' +
+    'scaleMode:document.getElementById("s").value,' +
     'audio:document.getElementById("a").checked,' +
     'clear:document.getElementById("c").checked}))}</' + 'script></body></html>';
 }
@@ -592,6 +603,7 @@ Pebble.addEventListener('webviewclosed', function(e) {
     var cfg = JSON.parse(decodeURIComponent(e.response));
     var oldUrl = settings().romUrl;
     localStorage.setItem('romUrl', cfg.romUrl || '');
+    localStorage.setItem('scaleMode', cfg.scaleMode === 'fullscreen' ? 'fullscreen' : '1x');
     localStorage.setItem('audioEnabled', cfg.audio === false ? '0' : '1');
     if (cfg.clear || oldUrl !== (cfg.romUrl || '')) {
       clearCachedRom();

@@ -58,6 +58,7 @@ def main() -> int:
     parser.add_argument("--persist-dir", type=Path, default=DEFAULT_PERSIST_DIR)
     parser.add_argument("--rom-file", type=Path)
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
+    parser.add_argument("--scale", choices=("1x", "fullscreen"), default="1x")
     parser.add_argument("--audio-enabled", dest="audio_enabled", action="store_true", default=False)
     parser.add_argument("--audio-disabled", dest="audio_enabled", action="store_false")
     parser.add_argument("--clear", action="store_true")
@@ -69,7 +70,7 @@ def main() -> int:
     try:
         for key in list(db.keys()):
             name = key.decode("utf-8", errors="replace") if isinstance(key, bytes) else str(key)
-            if name in ("romUrl", "romMeta", "audioEnabled") or name.startswith("romChunk"):
+            if name in ("romUrl", "romMeta", "audioEnabled", "scaleMode") or name.startswith("romChunk"):
                 del db[key]
         if args.clear:
             print("cleared phone ROM URL and cache")
@@ -78,6 +79,7 @@ def main() -> int:
             raise SystemExit("rom_url is required unless --clear is used")
         db["romUrl"] = args.rom_url
         db["audioEnabled"] = "1" if args.audio_enabled else "0"
+        db["scaleMode"] = args.scale
         if args.rom_file:
             seed_cached_rom(db, args.rom_url, args.rom_file, args.chunk_size)
     finally:

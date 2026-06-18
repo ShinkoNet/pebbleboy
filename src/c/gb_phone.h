@@ -33,6 +33,7 @@ typedef struct {
   uint16_t offset;
   uint32_t size;
   uint8_t cart_type;
+  uint8_t video_scale;
   bool audio_enabled;
   const uint8_t *data;
   uint16_t data_len;

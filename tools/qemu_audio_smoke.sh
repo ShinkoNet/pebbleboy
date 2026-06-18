@@ -26,7 +26,7 @@ pebble kill || true
 python3 tools/rom_http_server.py "$port" "$rom_path" > "$server_log" 2>&1 &
 server_pid=$!
 sleep 0.3
-python3 tools/seed_phone_rom.py --audio-enabled "$rom_url"
+python3 tools/seed_phone_rom.py --scale 1x --audio-enabled "$rom_url"
 
 pebble install --emulator emery --vnc --logs build/Pebbleboy.pbw > "$log" 2>&1 &
 log_pid=$!

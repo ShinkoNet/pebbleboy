@@ -45,7 +45,7 @@ if [ -z "${PB_PHONE_ROM_URL:-}" ]; then
   sleep 0.3
 fi
 
-python3 tools/seed_phone_rom.py --audio-disabled "$rom_url"
+python3 tools/seed_phone_rom.py --scale 1x --audio-disabled "$rom_url"
 
 pebble install --emulator emery --vnc --logs build/Pebbleboy.pbw > "$log" 2>&1 &
 log_pid=$!

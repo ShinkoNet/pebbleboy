@@ -23,7 +23,7 @@ rom_url="http://127.0.0.1:${port}/${url_path}"
 python3 tools/rom_http_server.py "$port" "$rom_path" > "$server_log" 2>&1 &
 server_pid=$!
 sleep 0.3
-python3 tools/seed_phone_rom.py --audio-disabled "$rom_url"
+python3 tools/seed_phone_rom.py --scale 1x --audio-disabled "$rom_url"
 
 pebble kill || true
 
