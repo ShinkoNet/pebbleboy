@@ -15,6 +15,7 @@
 typedef enum {
   PB_VIDEO_SCALE_1X = 0,
   PB_VIDEO_SCALE_FULLSCREEN,
+  PB_VIDEO_SCALE_ASPECT_FIT,
 } PbVideoScale;
 
 void pb_video_init(void);
@@ -31,4 +32,3 @@ void pb_video_render(GContext *ctx, GRect bounds);
 #endif
 
 #endif
-

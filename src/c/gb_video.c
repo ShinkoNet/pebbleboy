@@ -94,13 +94,29 @@ void pb_video_render(GContext *ctx, GRect bounds) {
     return;
   }
 
-  if (s_scale == PB_VIDEO_SCALE_FULLSCREEN) {
-    for (int16_t y = 0; y < bounds.size.h; y++) {
-      uint8_t src_y = (uint8_t)((int32_t)y * PB_GB_LCD_H / bounds.size.h);
-      for (int16_t x = 0; x < bounds.size.w; x++) {
-        uint8_t src_x = (uint8_t)((int32_t)x * PB_GB_LCD_W / bounds.size.w);
-        prv_plot(fb, bounds.origin.x + x, bounds.origin.y + y,
-                 prv_argb_for_shade(pb_video_get_pixel(src_x, src_y)));
+  if (s_scale == PB_VIDEO_SCALE_FULLSCREEN || s_scale == PB_VIDEO_SCALE_ASPECT_FIT) {
+    int16_t out_w = bounds.size.w;
+    int16_t out_h = bounds.size.h;
+    int16_t ox = bounds.origin.x;
+    int16_t oy = bounds.origin.y;
+
+    if (s_scale == PB_VIDEO_SCALE_ASPECT_FIT) {
+      int32_t width_scaled_h = (int32_t)bounds.size.w * PB_GB_LCD_H / PB_GB_LCD_W;
+      int32_t height_scaled_w = (int32_t)bounds.size.h * PB_GB_LCD_W / PB_GB_LCD_H;
+      if (width_scaled_h <= bounds.size.h) {
+        out_h = (int16_t)width_scaled_h;
+        oy = bounds.origin.y + (bounds.size.h - out_h) / 2;
+      } else {
+        out_w = (int16_t)height_scaled_w;
+        ox = bounds.origin.x + (bounds.size.w - out_w) / 2;
+      }
+    }
+
+    for (int16_t y = 0; y < out_h; y++) {
+      uint8_t src_y = (uint8_t)((int32_t)y * PB_GB_LCD_H / out_h);
+      for (int16_t x = 0; x < out_w; x++) {
+        uint8_t src_x = (uint8_t)((int32_t)x * PB_GB_LCD_W / out_w);
+        prv_plot(fb, ox + x, oy + y, prv_argb_for_shade(pb_video_get_pixel(src_x, src_y)));
       }
     }
   } else {
@@ -116,4 +132,3 @@ void pb_video_render(GContext *ctx, GRect bounds) {
   graphics_release_frame_buffer(ctx, fb);
 }
 #endif
-

@@ -58,7 +58,7 @@ def main() -> int:
     parser.add_argument("--persist-dir", type=Path, default=DEFAULT_PERSIST_DIR)
     parser.add_argument("--rom-file", type=Path)
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
-    parser.add_argument("--scale", choices=("1x", "fullscreen"), default="1x")
+    parser.add_argument("--scale", choices=("1x", "fullscreen", "fit"), default="1x")
     parser.add_argument("--audio-enabled", dest="audio_enabled", action="store_true", default=False)
     parser.add_argument("--audio-disabled", dest="audio_enabled", action="store_false")
     parser.add_argument("--clear", action="store_true")

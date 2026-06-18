@@ -81,18 +81,24 @@ def read_png(path: Path) -> tuple[int, int, bytes]:
 def main() -> int:
     allow_loading = False
     fullscreen = False
+    aspect_fit = False
     args = sys.argv[1:]
     while args and args[0].startswith("--"):
         if args[0] == "--allow-loading":
             allow_loading = True
         elif args[0] == "--fullscreen":
             fullscreen = True
+        elif args[0] == "--aspect-fit":
+            aspect_fit = True
         else:
             print(f"unknown option: {args[0]}", file=sys.stderr)
             return 2
         args = args[1:]
     if len(args) != 1:
-        print(f"usage: {sys.argv[0]} [--allow-loading] [--fullscreen] SCREENSHOT.png", file=sys.stderr)
+        print(
+            f"usage: {sys.argv[0]} [--allow-loading] [--fullscreen|--aspect-fit] SCREENSHOT.png",
+            file=sys.stderr,
+        )
         return 2
     width, height, rgba = read_png(Path(args[0]))
     colors = set()
@@ -131,6 +137,25 @@ def main() -> int:
         active_fullscreen = len(colors) >= 2 and nonblack >= 25000 and outside_nonblack >= 5000
         if not active_fullscreen:
             print("screenshot does not show fullscreen Game Boy video", file=sys.stderr)
+            return 1
+        return 0
+    if aspect_fit:
+        active_aspect_fit = len(colors) >= 2 and nonblack >= 25000 and outside_nonblack >= 5000
+        if not active_aspect_fit:
+            print("screenshot does not show aspect-fit Game Boy video", file=sys.stderr)
+            return 1
+        top_bar_black = all(
+            rgba[(y * width + x) * 4:(y * width + x) * 4 + 3] == b"\x00\x00\x00"
+            for y in range(0, 20)
+            for x in range(width)
+        )
+        bottom_bar_black = all(
+            rgba[(y * width + x) * 4:(y * width + x) * 4 + 3] == b"\x00\x00\x00"
+            for y in range(height - 20, height)
+            for x in range(width)
+        )
+        if not top_bar_black or not bottom_bar_black:
+            print("aspect-fit screenshot is missing vertical letterbox bars", file=sys.stderr)
             return 1
         return 0
     active_video = len(viewport_colors) >= 2 and viewport_nonblack >= 5000

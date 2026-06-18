@@ -11,10 +11,7 @@ if [ ! -f roms/tetris.gb ]; then
 fi
 
 mkdir -p build
-log=build/pebbleboy-fullscreen-qemu.log
-screenshot=build/pebbleboy-fullscreen-qemu.png
 server_log=build/rom-server-fullscreen-qemu.log
-: > "$log"
 : > "$server_log"
 
 rom_path="$(python3 -c 'from pathlib import Path; print(Path("roms/tetris.gb").resolve())')"
@@ -26,73 +23,89 @@ rom_url="http://127.0.0.1:${port}/${url_path}"
 python3 tools/rom_http_server.py "$port" "$rom_path" > "$server_log" 2>&1 &
 server_pid=$!
 sleep 0.3
-python3 tools/seed_phone_rom.py --scale fullscreen --audio-disabled "$rom_url"
-
-pebble kill || true
-pebble install --emulator emery --vnc --logs build/Pebbleboy.pbw > "$log" 2>&1 &
-log_pid=$!
+log_pid=
 
 cleanup() {
   if kill -0 "$server_pid" 2>/dev/null; then
     kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
   fi
-  if kill -0 "$log_pid" 2>/dev/null; then
+  if [ -n "${log_pid:-}" ] && kill -0 "$log_pid" 2>/dev/null; then
     kill "$log_pid" 2>/dev/null || true
     wait "$log_pid" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
 
-for _ in $(seq 1 60); do
-  if grep -q "phone info title=TETRIS" "$log" &&
-     grep -q "scale=1" "$log" &&
-     grep -q "started TETRIS phone" "$log" &&
-     grep -q "fps=" "$log"; then
-    break
-  fi
-  if ! kill -0 "$log_pid" 2>/dev/null; then
-    cat "$log"
-    echo "pebble install/log command exited before fullscreen startup" >&2
+run_scale_smoke() {
+  local mode="$1"
+  local scale_value="$2"
+  local check_arg="$3"
+  local log="build/pebbleboy-${mode}-qemu.log"
+  local screenshot="build/pebbleboy-${mode}-qemu.png"
+  : > "$log"
+
+  python3 tools/seed_phone_rom.py --scale "$mode" --audio-disabled "$rom_url"
+
+  pebble kill || true
+  pebble install --emulator emery --vnc --logs build/Pebbleboy.pbw > "$log" 2>&1 &
+  log_pid=$!
+
+  for _ in $(seq 1 60); do
+    if grep -q "phone info title=TETRIS" "$log" &&
+       grep -q "scale=${scale_value}" "$log" &&
+       grep -q "started TETRIS phone" "$log" &&
+       grep -q "fps=" "$log"; then
+      break
+    fi
+    if ! kill -0 "$log_pid" 2>/dev/null; then
+      cat "$log"
+      echo "pebble install/log command exited before ${mode} startup" >&2
+      exit 1
+    fi
+    sleep 0.5
+  done
+
+  cat "$log"
+
+  if ! grep -q "App install succeeded." "$log"; then
+    echo "missing install success marker in $log" >&2
     exit 1
   fi
-  sleep 0.5
-done
+  if ! grep -q "phone info title=TETRIS" "$log"; then
+    echo "missing phone ROM info log in $log" >&2
+    exit 1
+  fi
+  if ! grep -q "scale=${scale_value}" "$log"; then
+    echo "${mode} scale setting did not reach the watch" >&2
+    exit 1
+  fi
+  if ! grep -q "started TETRIS phone" "$log"; then
+    echo "missing app startup log in $log" >&2
+    exit 1
+  fi
 
-cat "$log"
+  python3 tools/analyze_bank_log.py --expect-no-resource --expect-phone-title TETRIS \
+    --expect-phone-banks 0,1 --expect-phone-request-count 2 \
+    --expect-phone-request-size 16384 --expect-phone-latencies \
+    --max-phone-latency-ms 5000 "$log"
 
-if ! grep -q "App install succeeded." "$log"; then
-  echo "missing install success marker in $log" >&2
-  exit 1
-fi
-if ! grep -q "phone info title=TETRIS" "$log"; then
-  echo "missing phone ROM info log in $log" >&2
-  exit 1
-fi
-if ! grep -q "scale=1" "$log"; then
-  echo "fullscreen scale setting did not reach the watch" >&2
-  exit 1
-fi
-if ! grep -q "started TETRIS phone" "$log"; then
-  echo "missing app startup log in $log" >&2
-  exit 1
-fi
+  if kill -0 "$log_pid" 2>/dev/null; then
+    kill "$log_pid" 2>/dev/null || true
+    wait "$log_pid" 2>/dev/null || true
+  fi
 
-python3 tools/analyze_bank_log.py --expect-no-resource --expect-phone-title TETRIS \
-  --expect-phone-banks 0,1 --expect-phone-request-count 2 \
-  --expect-phone-request-size 16384 --expect-phone-latencies \
-  --max-phone-latency-ms 5000 "$log"
+  sleep "${PB_QEMU_EXTRA_WAIT:-5}"
+  python3 tools/qemu_screendump.py "$screenshot"
+  python3 tools/check_screenshot.py "$check_arg" "$screenshot"
 
-if kill -0 "$log_pid" 2>/dev/null; then
-  kill "$log_pid" 2>/dev/null || true
-  wait "$log_pid" 2>/dev/null || true
-fi
+  echo "qemu ${mode} smoke passed: $screenshot"
+}
 
-sleep "${PB_QEMU_EXTRA_WAIT:-5}"
-python3 tools/qemu_screendump.py "$screenshot"
-python3 tools/check_screenshot.py --fullscreen "$screenshot"
+run_scale_smoke fullscreen 1 --fullscreen
+run_scale_smoke fit 2 --aspect-fit
 
 cleanup
 trap - EXIT
 
-echo "qemu fullscreen smoke passed: $screenshot"
+echo "qemu fullscreen smoke passed"

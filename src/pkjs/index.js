@@ -29,7 +29,7 @@ function settings() {
   return {
     romUrl: localStorage.getItem('romUrl') || '',
     audioEnabled: localStorage.getItem('audioEnabled') === '1',
-    scaleMode: scaleMode === 'fullscreen' ? 'fullscreen' : '1x'
+    scaleMode: (scaleMode === 'fullscreen' || scaleMode === 'fit') ? scaleMode : '1x'
   };
 }
 
@@ -488,14 +488,15 @@ function sendInfo() {
       sendError(err);
       return;
     }
+    var cfg = settings();
     Pebble.sendAppMessage({
       PB_CMD: CMD.ROM_INFO,
       PB_SIZE: romMeta.size,
       PB_TITLE: romMeta.title,
       PB_CART_TYPE: romMeta.cartType,
       PB_SHA1: romMeta.sha1,
-      PB_AUDIO: settings().audioEnabled ? 1 : 0,
-      PB_SCALE: settings().scaleMode === 'fullscreen' ? 1 : 0
+      PB_AUDIO: cfg.audioEnabled ? 1 : 0,
+      PB_SCALE: cfg.scaleMode === 'fullscreen' ? 1 : (cfg.scaleMode === 'fit' ? 2 : 0)
     }, null, function() { console.log('pebbleboy: info send failed'); });
     console.log('pebbleboy: ROM info ' + romMeta.title + ' size=' + romMeta.size);
   });
@@ -586,6 +587,8 @@ function configHtml() {
     '<option value="1x"' + (cfg.scaleMode === '1x' ? ' selected' : '') + '>1:1 centered</option>' +
     '<option value="fullscreen"' + (cfg.scaleMode === 'fullscreen' ? ' selected' : '') +
     '>Fill screen</option>' +
+    '<option value="fit"' + (cfg.scaleMode === 'fit' ? ' selected' : '') +
+    '>Aspect fit</option>' +
     '</select>' +
     '<label class="row"><input id="a" type="checkbox" ' +
     (cfg.audioEnabled ? 'checked' : '') + '> Enable speaker audio</label>' +
@@ -610,7 +613,9 @@ Pebble.addEventListener('webviewclosed', function(e) {
     var cfg = JSON.parse(decodeURIComponent(e.response));
     var oldUrl = settings().romUrl;
     localStorage.setItem('romUrl', cfg.romUrl || '');
-    localStorage.setItem('scaleMode', cfg.scaleMode === 'fullscreen' ? 'fullscreen' : '1x');
+    localStorage.setItem('scaleMode',
+                         (cfg.scaleMode === 'fullscreen' || cfg.scaleMode === 'fit') ?
+                         cfg.scaleMode : '1x');
     localStorage.setItem('audioEnabled', cfg.audio === false ? '0' : '1');
     if (cfg.clear || oldUrl !== (cfg.romUrl || '')) {
       clearCachedRom();
