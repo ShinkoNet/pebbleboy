@@ -13,6 +13,7 @@
 
 #define FRAME_MS 33
 #define FRAMES_PER_TICK 2
+#define MAX_CPU_STEPS_PER_TICK 40000u
 #define PHONE_INFO_RETRY_MS 2000
 #define CART_RAM_WINDOW_SIZE 0x1000u
 #define CART_RAM_BANK_NONE UINT16_MAX
@@ -43,6 +44,7 @@ static uint32_t s_frames;
 static uint64_t s_last_log_ms;
 static uint32_t s_last_log_frame;
 static uint64_t s_last_phone_info_request_ms;
+static uint32_t s_frame_budget_hits;
 
 typedef struct {
   bool gb_halt;
@@ -359,6 +361,7 @@ static bool prv_start_from_cart(const char *source_name) {
   s_frames = 0;
   s_last_log_frame = 0;
   s_last_log_ms = prv_now_ms();
+  s_frame_budget_hits = 0;
   s_running = true;
   return true;
 }
@@ -440,6 +443,7 @@ static void prv_phone_event(const PbPhoneEvent *event, void *context) {
       APP_LOG(APP_LOG_LEVEL_INFO, "phone info title=%s size=%lu cart=%u",
               event->title[0] ? event->title : "DMG ROM", event->size,
               (unsigned)event->cart_type);
+      pb_audio_set_enabled(event->audio_enabled);
       if (pb_cart_init_phone(s_cart, event->size, prv_request_phone_bank, NULL)) {
         snprintf(s_status, sizeof(s_status), "Phone ROM %s",
                  event->title[0] ? event->title : "loading");
@@ -571,22 +575,32 @@ static bool prv_ensure_cpu_fetch_window(void) {
   return true;
 }
 
-static bool prv_run_one_frame(void) {
+static bool prv_run_one_frame(uint32_t *step_budget) {
   s_gb->direct.joypad = pb_input_joypad();
   s_gb->gb_frame = false;
 
-  while (!s_gb->gb_frame) {
+  while (!s_gb->gb_frame && *step_budget) {
     if (pb_cart_paused(s_cart) || s_cart_ram_paused || !prv_ensure_cpu_fetch_window()) {
       return false;
     }
     pb_cart_clear_read_fault(s_cart);
     s_cart_ram_faulted = false;
     prv_save_frame_checkpoint();
+    *step_budget -= 1;
     __gb_step_cpu(s_gb);
     if (pb_cart_read_faulted(s_cart) || pb_cart_paused(s_cart) || s_cart_ram_faulted) {
       prv_restore_frame_checkpoint();
       return false;
     }
+  }
+
+  if (!s_gb->gb_frame) {
+    s_frame_budget_hits++;
+    if ((s_frame_budget_hits & 0x1F) == 1) {
+      APP_LOG(APP_LOG_LEVEL_WARNING, "frame step budget hit pc=%04x",
+              (unsigned)s_gb->cpu_reg.pc.reg);
+    }
+    return false;
   }
 
   s_frames++;
@@ -596,8 +610,8 @@ static bool prv_run_one_frame(void) {
 static void prv_frame_timer_cb(void *data) {
   (void)data;
   s_timer = NULL;
-  prv_schedule_frame_timer(FRAME_MS);
   uint64_t now = prv_now_ms();
+  uint64_t tick_start_ms = now;
   prv_maybe_request_phone_info(now);
   prv_maybe_continue_cart_ram();
 
@@ -606,12 +620,17 @@ static void prv_frame_timer_cb(void *data) {
   }
 
   if (s_running && !pb_cart_paused(s_cart) && !s_cart_ram_paused) {
-    for (int i = 0; i < FRAMES_PER_TICK; i++) {
-      if (!prv_run_one_frame()) {
+    uint32_t step_budget = MAX_CPU_STEPS_PER_TICK;
+    bool completed_frame = false;
+    for (int i = 0; i < FRAMES_PER_TICK && step_budget; i++) {
+      if (!prv_run_one_frame(&step_budget)) {
         break;
       }
+      completed_frame = true;
     }
-    pb_audio_pump();
+    if (completed_frame) {
+      pb_audio_pump();
+    }
     prv_log_perf();
     prv_maybe_flush_cart_ram(prv_now_ms());
   }
@@ -619,6 +638,10 @@ static void prv_frame_timer_cb(void *data) {
   if (s_canvas) {
     layer_mark_dirty(s_canvas);
   }
+
+  uint64_t elapsed = prv_now_ms() - tick_start_ms;
+  uint32_t delay = elapsed >= FRAME_MS ? 1 : (uint32_t)(FRAME_MS - elapsed);
+  prv_schedule_frame_timer(delay);
 }
 
 static void prv_canvas_update_proc(Layer *layer, GContext *ctx) {

@@ -45,7 +45,7 @@ if [ -z "${PB_PHONE_ROM_URL:-}" ]; then
   sleep 0.3
 fi
 
-python3 tools/seed_phone_rom.py "$rom_url"
+python3 tools/seed_phone_rom.py --audio-disabled "$rom_url"
 
 pebble install --emulator emery --vnc --logs build/Pebbleboy.pbw > "$log" 2>&1 &
 log_pid=$!
@@ -115,22 +115,13 @@ fi
 
 python3 tools/analyze_bank_log.py --expect-no-resource --expect-phone-title "POKEMON RED" "$log"
 
+if kill -0 "$log_pid" 2>/dev/null; then
+  kill "$log_pid" 2>/dev/null || true
+  wait "$log_pid" 2>/dev/null || true
+fi
+
 sleep "${PB_QEMU_PHONE_EXTRA_WAIT:-5}"
-bridge_port="$(python3 - <<'PY'
-import json
-with open('/tmp/pb-emulator.json') as f:
-    print(json.load(f)['emery']['4.15.0-dirty-local']['pypkjs']['port'])
-PY
-)"
-for attempt in 1 2 3; do
-  if pebble screenshot --phone "localhost:${bridge_port}" "$screenshot"; then
-    break
-  fi
-  if [ "$attempt" = 3 ]; then
-    exit 1
-  fi
-  sleep 2
-done
+python3 tools/qemu_screendump.py "$screenshot"
 python3 tools/check_screenshot.py --allow-loading "$screenshot"
 
 cleanup

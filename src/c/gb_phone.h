@@ -33,6 +33,7 @@ typedef struct {
   uint16_t offset;
   uint32_t size;
   uint8_t cart_type;
+  bool audio_enabled;
   const uint8_t *data;
   uint16_t data_len;
   char title[17];

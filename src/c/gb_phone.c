@@ -16,6 +16,8 @@ extern uint32_t MESSAGE_KEY_PB_SRAM_SIZE;
 
 #define SRAM_SAVE_CHUNK_SIZE 512u
 #define SRAM_SAVE_MAX_RETRIES 5u
+/* Pebble's generated C table omits PB_AUDIO, though appinfo/js include it. */
+#define MESSAGE_KEY_PB_AUDIO_FALLBACK 10010u
 
 static PbCart *s_cart;
 static PbPhoneEventCb s_event_cb;
@@ -162,12 +164,14 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
       Tuple *size = dict_find(iter, MESSAGE_KEY_PB_SIZE);
       Tuple *title = dict_find(iter, MESSAGE_KEY_PB_TITLE);
       Tuple *cart_type = dict_find(iter, MESSAGE_KEY_PB_CART_TYPE);
+      Tuple *audio = dict_find(iter, MESSAGE_KEY_PB_AUDIO_FALLBACK);
       if (!size) {
         return;
       }
       event.type = PB_PHONE_EVENT_INFO;
       event.size = size->value->uint32;
       event.cart_type = cart_type ? cart_type->value->uint8 : 0;
+      event.audio_enabled = !audio || audio->value->uint8;
       if (title) {
         strncpy(event.title, title->value->cstring, sizeof(event.title) - 1);
       }

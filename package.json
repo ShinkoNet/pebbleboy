@@ -23,7 +23,8 @@
       "PB_CART_TYPE",
       "PB_SHA1",
       "PB_STATUS",
-      "PB_SRAM_SIZE"
+      "PB_SRAM_SIZE",
+      "PB_AUDIO"
     ],
     "targetPlatforms": [
       "emery"

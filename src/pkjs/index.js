@@ -26,7 +26,8 @@ var romLoadCallbacks = [];
 
 function settings() {
   return {
-    romUrl: localStorage.getItem('romUrl') || ''
+    romUrl: localStorage.getItem('romUrl') || '',
+    audioEnabled: localStorage.getItem('audioEnabled') === '1'
   };
 }
 
@@ -483,7 +484,8 @@ function sendInfo() {
       PB_SIZE: romMeta.size,
       PB_TITLE: romMeta.title,
       PB_CART_TYPE: romMeta.cartType,
-      PB_SHA1: romMeta.sha1
+      PB_SHA1: romMeta.sha1,
+      PB_AUDIO: settings().audioEnabled ? 1 : 0
     }, null, function() { console.log('pebbleboy: info send failed'); });
     console.log('pebbleboy: ROM info ' + romMeta.title + ' size=' + romMeta.size);
   });
@@ -568,10 +570,13 @@ function configHtml() {
     'value="' + htmlAttr(settings().romUrl) + '">' +
     '<p class="hint">Use a direct .gb URL, a raw Pastebin URL containing base64, or text starting ' +
     'with PEBBLEBOY_ROM_BASE64.</p>' +
+    '<label class="row"><input id="a" type="checkbox" ' +
+    (settings().audioEnabled ? 'checked' : '') + '> Enable speaker audio</label>' +
     '<label class="row"><input id="c" type="checkbox"> Clear cached ROM after save</label>' +
     '<button onclick="done()">Save</button></main>' +
     '<script>function done(){location.href="pebblejs://close#"+encodeURIComponent(' +
     'JSON.stringify({romUrl:document.getElementById("u").value.trim(),' +
+    'audio:document.getElementById("a").checked,' +
     'clear:document.getElementById("c").checked}))}</' + 'script></body></html>';
 }
 
@@ -587,6 +592,7 @@ Pebble.addEventListener('webviewclosed', function(e) {
     var cfg = JSON.parse(decodeURIComponent(e.response));
     var oldUrl = settings().romUrl;
     localStorage.setItem('romUrl', cfg.romUrl || '');
+    localStorage.setItem('audioEnabled', cfg.audio === false ? '0' : '1');
     if (cfg.clear || oldUrl !== (cfg.romUrl || '')) {
       clearCachedRom();
     } else {

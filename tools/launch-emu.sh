@@ -5,9 +5,9 @@ cd "$(dirname "$0")/.."
 
 usage() {
   cat <<'EOF'
-usage: tools/launch-emu.sh [--no-build] [--vnc] ROM.gb
-       tools/launch-emu.sh [--no-build] [--vnc] --ROM.gb
-       tools/launch-emu.sh [--no-build] [--vnc] --rom ROM.gb
+usage: tools/launch-emu.sh [--no-build] [--vnc] [--audio] ROM.gb
+       tools/launch-emu.sh [--no-build] [--vnc] [--audio] --ROM.gb
+       tools/launch-emu.sh [--no-build] [--vnc] [--audio] --rom ROM.gb
 
 Builds Pebbleboy, hosts the ROM over a local HTTP URL, configures pypkjs with
 that URL, and launches the visible Emery emulator with logs attached.
@@ -19,6 +19,7 @@ EOF
 
 build=1
 vnc=0
+audio=0
 rom_arg=
 
 while [ "$#" -gt 0 ]; do
@@ -32,6 +33,12 @@ while [ "$#" -gt 0 ]; do
       ;;
     --vnc)
       vnc=1
+      ;;
+    --audio)
+      audio=1
+      ;;
+    --no-audio)
+      audio=0
       ;;
     --rom)
       shift
@@ -103,7 +110,13 @@ if ! kill -0 "$server_pid" 2>/dev/null; then
   exit 1
 fi
 
-python3 tools/seed_phone_rom.py "$rom_url"
+seed_args=()
+if [ "$audio" -eq 1 ]; then
+  seed_args+=(--audio-enabled)
+else
+  seed_args+=(--audio-disabled)
+fi
+python3 tools/seed_phone_rom.py "${seed_args[@]}" "$rom_url"
 
 echo "ROM URL: $rom_url"
 echo "Server log: $server_log"

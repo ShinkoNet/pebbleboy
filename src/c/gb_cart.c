@@ -86,6 +86,15 @@ static const PbCartSlot *prv_find_const_slot(const PbCart *cart, uint32_t start)
   return NULL;
 }
 
+static bool prv_has_loading_slots(const PbCart *cart) {
+  for (int i = 0; i < (int)PB_CART_CACHE_SLOTS; i++) {
+    if (cart->slots[i].loading) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static PbCartSlot *prv_select_slot(PbCart *cart, uint32_t start) {
   PbCartSlot *existing = prv_find_slot(cart, start);
   if (existing) {
@@ -464,7 +473,9 @@ bool pb_cart_phone_end(PbCart *cart, uint16_t bank, uint16_t offset, uint16_t si
   prv_note_bank(&cart->stats.load_bank_mask, bank);
   PB_LOG("phone bank %u fill %u loaded size=%u", (unsigned)bank,
          (unsigned)offset, (unsigned)fill_size);
-  if (cart->pending_start >= start && cart->pending_start < end) {
+  const PbCartSlot *pending = prv_find_const_slot(cart, cart->pending_start);
+  if ((cart->pending_start >= start && cart->pending_start < end) ||
+      (pending && pending->valid) || !prv_has_loading_slots(cart)) {
     pb_cart_resume(cart);
   }
   return true;
