@@ -73,6 +73,14 @@ if ! grep -q "started SRAM PROBE phone, save=8192" "$log"; then
   echo "SRAM probe did not start with save RAM enabled" >&2
   exit 1
 fi
+if ! grep -q "phone SRAM window deferred: 4096/8192" "$log"; then
+  echo "SRAM probe did not defer SRAM allocation at startup" >&2
+  exit 1
+fi
+if ! grep -q "phone SRAM window allocated: 4096/8192" "$log"; then
+  echo "SRAM probe did not allocate SRAM on first access" >&2
+  exit 1
+fi
 if ! grep -q "phone SRAM load requested bank 0 size=4096" "$log"; then
   echo "SRAM probe did not request an SRAM load" >&2
   exit 1

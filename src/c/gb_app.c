@@ -114,8 +114,37 @@ static void prv_cart_ram_show_status(const char *action, uint16_t bank) {
   }
 }
 
+static bool prv_ensure_cart_ram_window(void) {
+  if (s_cart_ram) {
+    return true;
+  }
+  if (!s_cart_ram_size || !s_cart_ram_window_size) {
+    return false;
+  }
+
+  s_cart_ram = malloc(s_cart_ram_window_size);
+  if (!s_cart_ram) {
+    s_cart_ram_window_size = 0;
+    APP_LOG(APP_LOG_LEVEL_WARNING,
+            "phone SRAM window allocation failed for %u bytes",
+            (unsigned)s_cart_ram_size);
+    prv_set_status("No SRAM heap");
+    return false;
+  }
+
+  memset(s_cart_ram, 0xFF, s_cart_ram_window_size);
+  s_cart_ram_bank = CART_RAM_BANK_NONE;
+  s_cart_ram_loading_bank = CART_RAM_BANK_NONE;
+  s_cart_ram_pending_bank = CART_RAM_BANK_NONE;
+  APP_LOG(APP_LOG_LEVEL_INFO,
+          "phone SRAM window allocated: %u/%u bytes, heap free=%u used=%u",
+          (unsigned)s_cart_ram_window_size, (unsigned)s_cart_ram_size,
+          (unsigned)heap_bytes_free(), (unsigned)heap_bytes_used());
+  return true;
+}
+
 static bool prv_start_cart_ram_load(uint16_t bank) {
-  if (!s_cart_ram || s_cart_ram_loading || s_cart_ram_saving) {
+  if (!prv_ensure_cart_ram_window() || s_cart_ram_loading || s_cart_ram_saving) {
     return false;
   }
   if (!gb_phone_request_sram_load(bank, (uint16_t)s_cart_ram_window_size,
@@ -156,7 +185,10 @@ static bool prv_start_cart_ram_save(uint16_t pending_bank) {
 }
 
 static bool prv_cart_ram_select_bank(uint16_t bank) {
-  if (!s_cart_ram || !s_cart_ram_window_size) {
+  if (!s_cart_ram_size || !s_cart_ram_window_size) {
+    return false;
+  }
+  if (!prv_ensure_cart_ram_window()) {
     return false;
   }
   if (bank == s_cart_ram_bank && !s_cart_ram_loading && !s_cart_ram_saving) {
@@ -184,7 +216,7 @@ static bool prv_cart_ram_select_bank(uint16_t bank) {
 
 static uint8_t prv_cart_ram_read(struct gb_s *gb, const uint_fast32_t addr) {
   (void)gb;
-  if (addr < s_cart_ram_size && s_cart_ram) {
+  if (addr < s_cart_ram_size) {
     uint16_t bank = (uint16_t)(addr / CART_RAM_WINDOW_SIZE);
     if (!prv_cart_ram_select_bank(bank)) {
       return 0xFF;
@@ -199,7 +231,7 @@ static uint8_t prv_cart_ram_read(struct gb_s *gb, const uint_fast32_t addr) {
 
 static void prv_cart_ram_write(struct gb_s *gb, const uint_fast32_t addr, const uint8_t value) {
   (void)gb;
-  if (addr < s_cart_ram_size && s_cart_ram) {
+  if (addr < s_cart_ram_size) {
     uint16_t bank = (uint16_t)(addr / CART_RAM_WINDOW_SIZE);
     if (!prv_cart_ram_select_bank(bank)) {
       return;
@@ -340,23 +372,14 @@ static bool prv_start_from_cart(const char *source_name) {
   size_t save_size = 0;
   if (gb_get_save_size_s(s_gb, &save_size) == 0 && save_size > 0) {
     if (s_cart->mode == PB_CART_MODE_PHONE) {
+      s_cart_ram_size = save_size;
       s_cart_ram_window_size = save_size < CART_RAM_WINDOW_SIZE ? save_size : CART_RAM_WINDOW_SIZE;
-      s_cart_ram = malloc(s_cart_ram_window_size);
-      if (s_cart_ram) {
-        s_cart_ram_size = save_size;
-        s_cart_ram_bank = CART_RAM_BANK_NONE;
-        s_cart_ram_loading_bank = CART_RAM_BANK_NONE;
-        s_cart_ram_pending_bank = CART_RAM_BANK_NONE;
-        memset(s_cart_ram, 0xFF, s_cart_ram_window_size);
-        APP_LOG(APP_LOG_LEVEL_INFO,
-                "phone SRAM window active: %u/%u bytes",
-                (unsigned)s_cart_ram_window_size, (unsigned)save_size);
-      } else {
-        s_cart_ram_window_size = 0;
-        APP_LOG(APP_LOG_LEVEL_WARNING,
-                "phone SRAM window allocation failed for %u bytes",
-                (unsigned)save_size);
-      }
+      s_cart_ram_bank = CART_RAM_BANK_NONE;
+      s_cart_ram_loading_bank = CART_RAM_BANK_NONE;
+      s_cart_ram_pending_bank = CART_RAM_BANK_NONE;
+      APP_LOG(APP_LOG_LEVEL_INFO,
+              "phone SRAM window deferred: %u/%u bytes",
+              (unsigned)s_cart_ram_window_size, (unsigned)save_size);
     } else {
       APP_LOG(APP_LOG_LEVEL_WARNING, "save RAM unavailable for non-phone source: %u",
               (unsigned)save_size);

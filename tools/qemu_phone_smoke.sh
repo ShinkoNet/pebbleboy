@@ -100,12 +100,12 @@ if ! grep -q "started POKEMON RED phone" "$log"; then
   echo "missing phone-backed Pokemon startup in $log" >&2
   exit 1
 fi
-if ! grep -q "phone SRAM window active: 4096/32768" "$log"; then
-  echo "phone-backed Pokemon did not initialize the expected SRAM window" >&2
+if ! grep -q "phone SRAM window deferred: 4096/32768" "$log"; then
+  echo "phone-backed Pokemon did not defer the expected SRAM window" >&2
   exit 1
 fi
-if ! grep -Eq "started POKEMON RED phone, save=32768, heap free=([4-9][0-9]{3}|[1-9][0-9]{4,})" "$log"; then
-  echo "phone-backed Pokemon did not start with SRAM enabled and usable heap headroom" >&2
+if ! grep -Eq "started POKEMON RED phone, save=32768, heap free=([8-9][0-9]{3}|[1-9][0-9]{4,})" "$log"; then
+  echo "phone-backed Pokemon did not start with deferred SRAM heap headroom" >&2
   exit 1
 fi
 if ! grep -q "fps=" "$log"; then
