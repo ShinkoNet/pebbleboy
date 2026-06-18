@@ -530,6 +530,17 @@ function sendBank(bank, bankOffset, requestSize) {
     }
     var size = Math.min(requestSize, BANK_SIZE - bankOffset, romBytes.length - start);
     console.log('pebbleboy: bank request ' + bank + ' offset=' + bankOffset + ' size=' + size);
+    if (size <= MSG_CHUNK) {
+      sendQueue([{
+        PB_CMD: CMD.ROM_BANK_END,
+        PB_BANK: bank,
+        PB_OFFSET: bankOffset,
+        PB_SIZE: size,
+        PB_DATA: Array.prototype.slice.call(romBytes.subarray(start, start + size))
+      }]);
+      return;
+    }
+
     var messages = [{
       PB_CMD: CMD.ROM_BANK_BEGIN,
       PB_BANK: bank,

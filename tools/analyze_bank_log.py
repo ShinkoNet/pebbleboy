@@ -8,8 +8,8 @@ import sys
 
 
 LOAD_RE = re.compile(r"cart: (resource|memory|phone) bank (\d+)(?: (?:page|fill) \d+)? loaded")
-PHONE_REQUEST_RE = re.compile(r"cart: phone request bank (\d+) fill (\d+) size=(\d+)")
-PHONE_LATENCY_RE = re.compile(r"phone bank (\d+) ready .* latency_ms=(\d+)")
+PHONE_REQUEST_RE = re.compile(r"cart: phone request bank (\d+) fill (\d+) size=(\d+)( prefetch)?")
+PHONE_LATENCY_RE = re.compile(r"phone bank (\d+) ready fill=(\d+) size=(\d+) latency_ms=(\d+)")
 
 
 def bank_set(values):
@@ -22,6 +22,12 @@ def top_counts(counter):
     if not counter:
         return "none"
     return ",".join(f"{bank}:{count}" for bank, count in counter.most_common(8))
+
+
+def latency_summary(values):
+    if not values:
+        return "none"
+    return f"{min(values)}/{sum(values) // len(values)}/{max(values)}"
 
 
 def fail(message):
@@ -42,12 +48,16 @@ def main():
     parser.add_argument("--expect-phone-latencies", action="store_true")
     parser.add_argument("--allow-pending-phone-request", action="store_true")
     parser.add_argument("--max-phone-latency-ms", type=int)
+    parser.add_argument("--max-demand-phone-latency-ms", type=int)
     args = parser.parse_args()
 
     loads = collections.defaultdict(list)
     phone_requests = []
     phone_request_sizes = []
     phone_latencies = []
+    phone_demand_latencies = []
+    phone_prefetch_latencies = []
+    pending_requests = collections.defaultdict(collections.deque)
     started_tetris = False
     phone_titles = []
     phone_offer = False
@@ -72,21 +82,29 @@ def main():
 
             request_match = PHONE_REQUEST_RE.search(line)
             if request_match:
-                phone_requests.append(int(request_match.group(1)))
-                phone_request_sizes.append(int(request_match.group(3)))
+                bank = int(request_match.group(1))
+                offset = int(request_match.group(2))
+                size = int(request_match.group(3))
+                kind = "prefetch" if request_match.group(4) else "demand"
+                phone_requests.append(bank)
+                phone_request_sizes.append(size)
+                pending_requests[(bank, offset, size)].append(kind)
 
             latency_match = PHONE_LATENCY_RE.search(line)
             if latency_match:
-                phone_latencies.append(int(latency_match.group(2)))
+                bank = int(latency_match.group(1))
+                offset = int(latency_match.group(2))
+                size = int(latency_match.group(3))
+                latency = int(latency_match.group(4))
+                phone_latencies.append(latency)
+                queue = pending_requests.get((bank, offset, size))
+                kind = queue.popleft() if queue else "unknown"
+                if kind == "prefetch":
+                    phone_prefetch_latencies.append(latency)
+                elif kind == "demand":
+                    phone_demand_latencies.append(latency)
 
     request_counts = collections.Counter(phone_requests)
-    latency_summary = "none"
-    if phone_latencies:
-        latency_summary = (
-            f"{min(phone_latencies)}/"
-            f"{sum(phone_latencies) // len(phone_latencies)}/"
-            f"{max(phone_latencies)}"
-        )
     print(
         "bank log: "
         f"loads resource={bank_set(loads['resource'])} "
@@ -95,7 +113,9 @@ def main():
         f"phone_requests={len(phone_requests)} "
         f"request_banks={bank_set(phone_requests)} "
         f"request_sizes={bank_set(phone_request_sizes)} "
-        f"latency_ms_min_avg_max={latency_summary} "
+        f"latency_ms_min_avg_max={latency_summary(phone_latencies)} "
+        f"demand_latency_ms_min_avg_max={latency_summary(phone_demand_latencies)} "
+        f"prefetch_latency_ms_min_avg_max={latency_summary(phone_prefetch_latencies)} "
         f"top_requests={top_counts(request_counts)}"
     )
 
@@ -153,6 +173,16 @@ def main():
         if bad_latencies:
             return fail(
                 f"expected phone latencies <= {args.max_phone_latency_ms}ms; "
+                f"saw {max(bad_latencies)}ms"
+            )
+    if args.max_demand_phone_latency_ms is not None:
+        bad_latencies = [
+            value for value in phone_demand_latencies
+            if value > args.max_demand_phone_latency_ms
+        ]
+        if bad_latencies:
+            return fail(
+                f"expected demand phone latencies <= {args.max_demand_phone_latency_ms}ms; "
                 f"saw {max(bad_latencies)}ms"
             )
 

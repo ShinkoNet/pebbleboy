@@ -8,6 +8,7 @@ mkdir -p build
 
 node tools/check_pkjs_hash.js roms/tetris.gb
 node tools/pkjs_cache_test.js
+node tools/pkjs_bank_test.js
 python3 tools/make_sram_probe_rom.py build/sram_probe.gb --value 0x42
 python3 tools/make_mbc_probe_rom.py build/mbc1_probe.gb --mbc mbc1
 python3 tools/make_mbc_probe_rom.py build/mbc3_probe.gb --mbc mbc3

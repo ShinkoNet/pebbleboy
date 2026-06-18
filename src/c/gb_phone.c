@@ -206,14 +206,27 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
       Tuple *bank = dict_find(iter, MESSAGE_KEY_PB_BANK);
       Tuple *offset = dict_find(iter, MESSAGE_KEY_PB_OFFSET);
       Tuple *size = dict_find(iter, MESSAGE_KEY_PB_SIZE);
-      if (s_cart && bank && size &&
-          pb_cart_phone_end(s_cart, bank->value->uint16,
-                            offset ? offset->value->uint16 : 0,
-                            size->value->uint16)) {
+      Tuple *data = dict_find(iter, MESSAGE_KEY_PB_DATA);
+      uint16_t bank_value = bank ? bank->value->uint16 : 0;
+      uint16_t offset_value = offset ? offset->value->uint16 : 0;
+      uint16_t size_value = size ? size->value->uint16 : 0;
+      bool ready = false;
+      if (s_cart && bank && size) {
+        if (data) {
+          ready = data->length == size_value &&
+                  pb_cart_phone_begin(s_cart, bank_value, offset_value, size_value) &&
+                  pb_cart_phone_data(s_cart, bank_value, offset_value,
+                                     data->value->data, data->length) &&
+                  pb_cart_phone_end(s_cart, bank_value, offset_value, size_value);
+        } else {
+          ready = pb_cart_phone_end(s_cart, bank_value, offset_value, size_value);
+        }
+      }
+      if (ready) {
         event.type = PB_PHONE_EVENT_BANK_READY;
-        event.bank = bank->value->uint16;
-        event.offset = offset ? offset->value->uint16 : 0;
-        event.size = size->value->uint16;
+        event.bank = bank_value;
+        event.offset = offset_value;
+        event.size = size_value;
         prv_emit(&event);
       }
       break;

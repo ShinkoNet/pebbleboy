@@ -115,7 +115,8 @@ fi
 
 python3 tools/analyze_bank_log.py --expect-no-resource --expect-phone-title "POKEMON RED" \
   --expect-phone-request-sizes 512,16384 --expect-phone-latencies \
-  --allow-pending-phone-request --max-phone-latency-ms 5000 "$log"
+  --allow-pending-phone-request --max-phone-latency-ms 5000 \
+  --max-demand-phone-latency-ms 1500 "$log"
 
 if kill -0 "$log_pid" 2>/dev/null; then
   kill "$log_pid" 2>/dev/null || true
