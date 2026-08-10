@@ -53,15 +53,23 @@ not require either approach.
 
 ## Firmware and audio
 
-ROM selection and large-ROM streaming use ordinary AppMessage APIs and do not
-require a custom firmware build. The current Time 2 speaker stream API also
-accepts Pebbleboy's mono signed 16 kHz/16-bit PCM format.
+ROM selection and large-ROM streaming use ordinary AppMessage APIs; the custom
+firmware does not store multi-megabyte cartridges on the watch. Pebbleboy does,
+however, use a larger Obelix foreground-app RAM allocation for its 48 KB cache
+and emulator state. Its CPU load also exposes speaker refill starvation in the
+stock scheduler.
 
-CPU-heavy apps can expose speaker refill starvation in an unpatched PebbleOS
-build. Pebbleboy remains usable with audio disabled, but reliable audio during
-emulation currently benefits from the Obelix speaker scheduling and DMA fixes
-developed alongside this app. Those firmware changes should be upstreamed so a
-store release does not depend on users building firmware.
+Prebuilt DVT and PVT firmware containing the extra app memory and speaker
+scheduling/DMA fixes is published from the
+[ShinkoNet PebbleOS fork](https://github.com/ShinkoNet/PebbleOS/releases). The
+[firmware notes](https://github.com/ShinkoNet/PebbleOS/blob/main/PEBBLEBOY_FIRMWARE.md)
+explain hardware selection, sideload precautions, source patches, and the
+automatic upstream-sync process. Each release contains a merged PBZ with both
+firmware slots; users do not need to compile PebbleOS themselves.
+
+The current Time 2 speaker API accepts Pebbleboy's mono signed 16 kHz/16-bit
+PCM format. Disabling audio reduces load, but does not replace the additional
+app-memory allocation required by the current high-performance cache.
 
 ## Controls
 
@@ -111,3 +119,10 @@ Test ROMs are local, gitignored inputs. They are not part of the PBW.
 The emulator core is based on Peanut-GB by Mahyar Koshkouei and contains
 credited MIT-licensed portions from SameBoy. See `src/c/peanut_gb.h` for its
 licence and notices.
+
+## Licence
+
+Pebbleboy is distributed under the [MIT License](LICENSE). Third-party
+copyright and licence information is collected in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and retained in the relevant
+source files.
