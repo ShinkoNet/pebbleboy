@@ -10,6 +10,8 @@ static PbCart s_cart;
 static struct gb_s s_gb;
 static uint8_t *s_save_ram;
 static size_t s_save_ram_size;
+static char s_serial[8192];
+static size_t s_serial_size;
 
 static uint8_t rom_read(struct gb_s *gb, const uint_fast32_t addr) {
   return pb_cart_read((PbCart *)gb->direct.priv, (uint32_t)addr);
@@ -36,6 +38,14 @@ static void gb_error(struct gb_s *gb, const enum gb_error_e error, const uint16_
 static void lcd_line(struct gb_s *gb, const uint8_t *pixels, const uint_fast8_t line) {
   (void)gb;
   pb_video_draw_line(pixels, (uint8_t)line);
+}
+
+static void serial_tx(struct gb_s *gb, const uint8_t value) {
+  (void)gb;
+  if (s_serial_size + 1 < sizeof(s_serial)) {
+    s_serial[s_serial_size++] = (char)value;
+    s_serial[s_serial_size] = '\0';
+  }
 }
 
 void pb_core_rom_bank_changed(struct gb_s *gb) {
@@ -181,6 +191,9 @@ int main(int argc, char **argv) {
   }
   pb_cart_set_active_bank(&s_cart, s_gb.selected_rom_bank);
   gb_init_lcd(&s_gb, lcd_line);
+  if (getenv("PB_DESKTOP_SERIAL")) {
+    gb_init_serial(&s_gb, serial_tx, NULL);
+  }
 
   if (getenv("PB_DESKTOP_NO_SAVE")) {
     s_save_ram_size = 0;
@@ -218,11 +231,20 @@ int main(int argc, char **argv) {
       save_nonff++;
     }
   }
-  printf("rom=%s title=\"%s\" frames=%d mbc=%d banks=%u save=%zu save0=%02x save_nonff=%zu hash=%08x hits=%u misses=%u loads=%u load_banks=%s request_banks=%s\n",
+  printf("rom=%s title=\"%s\" frames=%d mbc=%d banks=%u save=%zu save0=%02x save_nonff=%zu hash=%08x hits=%u misses=%u loads=%u source_reads=%u source_bytes=%u load_banks=%s request_banks=%s\n",
          argv[1], title, frames, (int)s_gb.mbc, (unsigned)s_cart.bank_count,
          s_save_ram_size, save0, save_nonff, pb_video_hash(),
          (unsigned)stats->hits, (unsigned)stats->misses, (unsigned)stats->loads,
+         (unsigned)stats->source_reads, (unsigned)stats->source_bytes,
          load_banks, request_banks);
+  printf("cpu pc=%04x af=%04x bc=%04x de=%04x hl=%04x sp=%04x\n",
+         s_gb.cpu_reg.pc.reg,
+         (unsigned)((uint16_t)s_gb.cpu_reg.a << 8 | s_gb.cpu_reg.f.reg),
+         s_gb.cpu_reg.bc.reg, s_gb.cpu_reg.de.reg, s_gb.cpu_reg.hl.reg,
+         s_gb.cpu_reg.sp.reg);
+  if (s_serial_size) {
+    printf("serial:\n%.*s\n", (int)s_serial_size, s_serial);
+  }
 
   free(s_save_ram);
   free(rom);

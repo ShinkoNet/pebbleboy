@@ -5,7 +5,7 @@
 #ifdef PB_DESKTOP
 #define PB_LOG(fmt, ...)
 #else
-#define PB_LOG(fmt, ...) APP_LOG(APP_LOG_LEVEL_INFO, "cart: " fmt, ##__VA_ARGS__)
+#define PB_LOG(fmt, ...) APP_LOG(APP_LOG_LEVEL_DEBUG, "cart: " fmt, ##__VA_ARGS__)
 #endif
 
 #ifndef PB_DESKTOP
@@ -39,9 +39,10 @@ static uint32_t prv_slot_start(uint32_t addr) {
 }
 
 static uint32_t prv_fill_unit(const PbCart *cart, uint32_t addr) {
-  return cart->bank_count <= 2 || addr < PB_CART_BANK_SIZE
-      ? PB_CART_BANK_SIZE
-      : PB_CART_LINE_SIZE;
+  if (cart->bank_count <= 2 || addr < PB_CART_BANK_SIZE) {
+    return PB_CART_BANK_SIZE;
+  }
+  return PB_CART_LINE_SIZE;
 }
 
 static uint32_t prv_fill_start(const PbCart *cart, uint32_t addr) {
@@ -76,9 +77,37 @@ static uint16_t prv_slot_bank_offset(uint32_t start) {
   return (uint16_t)(start & (PB_CART_BANK_SIZE - 1u));
 }
 
+static void prv_hint_slot(PbCart *cart, uint16_t slot) {
+  for (int i = 0; i < PB_CART_LOOKUP_HINTS; i++) {
+    if (cart->lookup_hints[i] == slot) {
+      for (; i > 0; i--) {
+        cart->lookup_hints[i] = cart->lookup_hints[i - 1];
+      }
+      cart->lookup_hints[0] = slot;
+      return;
+    }
+  }
+  for (int i = PB_CART_LOOKUP_HINTS - 1; i > 0; i--) {
+    cart->lookup_hints[i] = cart->lookup_hints[i - 1];
+  }
+  cart->lookup_hints[0] = slot;
+}
+
 static PbCartSlot *prv_find_slot(PbCart *cart, uint32_t start) {
+  if (start < PB_CART_BANK_SIZE) {
+    uint16_t slot = (uint16_t)(start / PB_CART_LINE_SIZE);
+    return cart->slots[slot].start == (int32_t)start ? &cart->slots[slot] : NULL;
+  }
+  for (int i = 0; i < PB_CART_LOOKUP_HINTS; i++) {
+    uint16_t slot = cart->lookup_hints[i];
+    if (slot < PB_CART_CACHE_SLOTS && cart->slots[slot].start == (int32_t)start) {
+      prv_hint_slot(cart, slot);
+      return &cart->slots[slot];
+    }
+  }
   for (int i = 0; i < (int)PB_CART_CACHE_SLOTS; i++) {
     if (cart->slots[i].start == (int32_t)start) {
+      prv_hint_slot(cart, (uint16_t)i);
       return &cart->slots[i];
     }
   }
@@ -86,6 +115,16 @@ static PbCartSlot *prv_find_slot(PbCart *cart, uint32_t start) {
 }
 
 static const PbCartSlot *prv_find_const_slot(const PbCart *cart, uint32_t start) {
+  if (start < PB_CART_BANK_SIZE) {
+    uint16_t slot = (uint16_t)(start / PB_CART_LINE_SIZE);
+    return cart->slots[slot].start == (int32_t)start ? &cart->slots[slot] : NULL;
+  }
+  for (int i = 0; i < PB_CART_LOOKUP_HINTS; i++) {
+    uint16_t slot = cart->lookup_hints[i];
+    if (slot < PB_CART_CACHE_SLOTS && cart->slots[slot].start == (int32_t)start) {
+      return &cart->slots[slot];
+    }
+  }
   for (int i = 0; i < (int)PB_CART_CACHE_SLOTS; i++) {
     if (cart->slots[i].start == (int32_t)start) {
       return &cart->slots[i];
@@ -168,8 +207,12 @@ void pb_cart_init_empty(PbCart *cart) {
   cart->pending_start = UINT32_MAX;
   cart->read_fault_start = UINT32_MAX;
   cart->active_bank = PB_CART_ACTIVE_BANK_NONE;
+  cart->last_read_slot = UINT16_MAX;
   for (int i = 0; i < (int)PB_CART_CACHE_SLOTS; i++) {
     cart->slots[i].start = -1;
+  }
+  for (int i = 0; i < PB_CART_LOOKUP_HINTS; i++) {
+    cart->lookup_hints[i] = UINT16_MAX;
   }
 }
 
@@ -201,6 +244,8 @@ static bool prv_load_line_from_source(PbCart *cart, PbCartSlot *slot, uint32_t s
   slot->loading = false;
   slot->received = size;
   slot->last_used = ++cart->tick;
+  cart->stats.source_reads++;
+  cart->stats.source_bytes += size;
   return true;
 }
 
@@ -226,8 +271,11 @@ static bool prv_load_fill(PbCart *cart, uint32_t requested_start) {
   (void)offset;
   cart->stats.last_load_bank = bank;
   prv_note_bank(&cart->stats.load_bank_mask, bank);
-  PB_LOG("%s bank %u fill %u loaded size=%u", prv_mode_name(cart->mode),
-         (unsigned)bank, (unsigned)offset, (unsigned)fill_size);
+  if (cart->mode != PB_CART_MODE_RESOURCE || cart->stats.loads <= 2 ||
+      (cart->stats.loads & 0x3Fu) == 0) {
+    PB_LOG("%s bank %u fill %u loaded size=%u", prv_mode_name(cart->mode),
+           (unsigned)bank, (unsigned)offset, (unsigned)fill_size);
+  }
   return true;
 }
 
@@ -366,7 +414,7 @@ bool pb_cart_ensure_fixed_bank(PbCart *cart) {
   return true;
 }
 
-uint8_t pb_cart_read(PbCart *cart, uint32_t addr) {
+uint8_t pb_cart_read_slow(PbCart *cart, uint32_t addr) {
   if (addr >= cart->rom_size) {
     return 0xFF;
   }
@@ -393,8 +441,14 @@ uint8_t pb_cart_read(PbCart *cart, uint32_t addr) {
   if (!slot || !slot->valid || offset >= slot->size) {
     return 0xFF;
   }
-  slot->last_used = ++cart->tick;
+  uint16_t slot_index = (uint16_t)(slot - cart->slots);
+  if (slot_index != cart->last_read_slot) {
+    slot->last_used = ++cart->tick;
+    cart->last_read_slot = slot_index;
+  }
+#if PB_CART_TRACK_HITS
   cart->stats.hits++;
+#endif
   return slot->data[offset];
 }
 

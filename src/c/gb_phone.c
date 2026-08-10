@@ -61,8 +61,10 @@ static bool prv_send_request(uint8_t cmd, uint16_t bank, uint16_t offset, uint16
     return false;
   }
   dict_write_uint8(out, MESSAGE_KEY_PB_CMD, cmd);
-  if (cmd == PB_CMD_ROM_BANK_REQUEST) {
+  if (cmd == PB_CMD_ROM_BANK_REQUEST || cmd == PB_CMD_ROM_SELECT) {
     dict_write_uint16(out, MESSAGE_KEY_PB_BANK, bank);
+  }
+  if (cmd == PB_CMD_ROM_BANK_REQUEST) {
     dict_write_uint16(out, MESSAGE_KEY_PB_OFFSET, offset);
     dict_write_uint16(out, MESSAGE_KEY_PB_SIZE, size);
   }
@@ -71,6 +73,14 @@ static bool prv_send_request(uint8_t cmd, uint16_t bank, uint16_t offset, uint16
 
 bool gb_phone_request_info(void) {
   return prv_send_request(PB_CMD_ROM_INFO_REQUEST, 0, 0, 0);
+}
+
+bool gb_phone_request_rom_list(void) {
+  return prv_send_request(PB_CMD_ROM_LIST_REQUEST, 0, 0, 0);
+}
+
+bool gb_phone_select_rom(uint16_t index) {
+  return prv_send_request(PB_CMD_ROM_SELECT, index, 0, 0);
 }
 
 bool gb_phone_request_bank(uint16_t bank, uint16_t offset, uint16_t size) {
@@ -161,6 +171,34 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
   memset(&event, 0, sizeof(event));
 
   switch (cmd->value->uint8) {
+    case PB_CMD_ROM_LIST_BEGIN: {
+      Tuple *size = dict_find(iter, MESSAGE_KEY_PB_SIZE);
+      event.type = PB_PHONE_EVENT_ROM_LIST_BEGIN;
+      event.size = size ? size->value->uint32 : 0;
+      prv_emit(&event);
+      break;
+    }
+    case PB_CMD_ROM_LIST_ITEM: {
+      Tuple *index = dict_find(iter, MESSAGE_KEY_PB_BANK);
+      Tuple *title = dict_find(iter, MESSAGE_KEY_PB_TITLE);
+      if (!index) {
+        return;
+      }
+      event.type = PB_PHONE_EVENT_ROM_LIST_ITEM;
+      event.bank = index->value->uint16;
+      if (title) {
+        strncpy(event.title, title->value->cstring, sizeof(event.title) - 1);
+      }
+      prv_emit(&event);
+      break;
+    }
+    case PB_CMD_ROM_LIST_END: {
+      Tuple *size = dict_find(iter, MESSAGE_KEY_PB_SIZE);
+      event.type = PB_PHONE_EVENT_ROM_LIST_END;
+      event.size = size ? size->value->uint32 : 0;
+      prv_emit(&event);
+      break;
+    }
     case PB_CMD_ROM_INFO: {
       Tuple *size = dict_find(iter, MESSAGE_KEY_PB_SIZE);
       Tuple *title = dict_find(iter, MESSAGE_KEY_PB_TITLE);

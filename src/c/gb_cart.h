@@ -11,7 +11,7 @@
 
 #define PB_CART_BANK_SIZE 0x4000u
 #ifndef PB_CART_CACHE_BANKS
-#define PB_CART_CACHE_BANKS 4
+#define PB_CART_CACHE_BANKS 3
 #endif
 #define PB_CART_CACHE_BYTES (PB_CART_BANK_SIZE * PB_CART_CACHE_BANKS)
 #ifndef PB_CART_LINE_SIZE
@@ -23,6 +23,14 @@
 #define PB_CART_CACHE_SLOTS (PB_CART_CACHE_BYTES / PB_CART_LINE_SIZE)
 #define PB_CART_BANK0_SLOTS (PB_CART_BANK_SIZE / PB_CART_LINE_SIZE)
 #define PB_CART_ACTIVE_BANK_NONE UINT16_MAX
+#define PB_CART_LOOKUP_HINTS 4
+#ifndef PB_CART_TRACK_HITS
+#ifdef PB_DESKTOP
+#define PB_CART_TRACK_HITS 1
+#else
+#define PB_CART_TRACK_HITS 0
+#endif
+#endif
 
 typedef enum {
   PB_CART_MODE_NONE = 0,
@@ -40,6 +48,8 @@ typedef struct {
   uint32_t loads;
   uint32_t phone_requests;
   uint32_t failed_loads;
+  uint32_t source_reads;
+  uint32_t source_bytes;
   uint16_t last_miss_bank;
   uint16_t last_load_bank;
   uint64_t load_bank_mask;
@@ -71,8 +81,10 @@ typedef struct {
   PbCartBankRequestCb request_cb;
   void *request_context;
   PbCartSlot slots[PB_CART_CACHE_SLOTS];
+  uint16_t lookup_hints[PB_CART_LOOKUP_HINTS];
   PbCartStats stats;
   uint32_t tick;
+  uint16_t last_read_slot;
 #ifndef PB_DESKTOP
   ResHandle resource;
   uint32_t resource_id;
@@ -94,7 +106,27 @@ bool pb_cart_init_memory(PbCart *cart, const uint8_t *rom, uint32_t rom_size);
 bool pb_cart_init_phone(PbCart *cart, uint32_t rom_size, PbCartBankRequestCb request_cb,
                         void *request_context);
 
-uint8_t pb_cart_read(PbCart *cart, uint32_t addr);
+uint8_t pb_cart_read_slow(PbCart *cart, uint32_t addr);
+
+/* CPU instruction fetches normally stay within one 512-byte cache line for
+ * hundreds of reads. Keep that overwhelmingly common path inline so the core
+ * avoids another function call and a cache search for every ROM byte. */
+static inline uint8_t pb_cart_read(PbCart *cart, uint32_t addr) {
+  uint16_t slot_index = cart->last_read_slot;
+  if (slot_index < PB_CART_CACHE_SLOTS && addr < cart->rom_size) {
+    PbCartSlot *slot = &cart->slots[slot_index];
+    if (slot->valid && slot->start >= 0) {
+      uint32_t offset = addr - (uint32_t)slot->start;
+      if (offset < slot->size) {
+#if PB_CART_TRACK_HITS
+        cart->stats.hits++;
+#endif
+        return slot->data[offset];
+      }
+    }
+  }
+  return pb_cart_read_slow(cart, addr);
+}
 bool pb_cart_ensure_addr(PbCart *cart, uint32_t addr);
 bool pb_cart_ensure_bank(PbCart *cart, uint16_t bank);
 bool pb_cart_ensure_fixed_bank(PbCart *cart);

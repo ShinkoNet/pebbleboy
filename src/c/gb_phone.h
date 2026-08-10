@@ -17,6 +17,11 @@ enum {
   PB_CMD_SRAM_LOAD_REQUEST = 20,
   PB_CMD_SRAM_LOAD_DATA = 21,
   PB_CMD_SRAM_SAVE = 22,
+  PB_CMD_ROM_LIST_REQUEST = 30,
+  PB_CMD_ROM_LIST_BEGIN = 31,
+  PB_CMD_ROM_LIST_ITEM = 32,
+  PB_CMD_ROM_LIST_END = 33,
+  PB_CMD_ROM_SELECT = 34,
 };
 
 typedef enum {
@@ -24,6 +29,9 @@ typedef enum {
   PB_PHONE_EVENT_BANK_READY,
   PB_PHONE_EVENT_SRAM_LOAD_DATA,
   PB_PHONE_EVENT_SRAM_SAVE_DONE,
+  PB_PHONE_EVENT_ROM_LIST_BEGIN,
+  PB_PHONE_EVENT_ROM_LIST_ITEM,
+  PB_PHONE_EVENT_ROM_LIST_END,
   PB_PHONE_EVENT_ERROR,
 } PbPhoneEventType;
 
@@ -46,6 +54,8 @@ typedef void (*PbPhoneEventCb)(const PbPhoneEvent *event, void *context);
 void gb_phone_init(PbCart *cart, PbPhoneEventCb event_cb, void *context);
 void gb_phone_deinit(void);
 bool gb_phone_request_info(void);
+bool gb_phone_request_rom_list(void);
+bool gb_phone_select_rom(uint16_t index);
 bool gb_phone_request_bank(uint16_t bank, uint16_t offset, uint16_t size);
 bool gb_phone_request_sram_load(uint16_t bank, uint16_t size, uint32_t total_size);
 bool gb_phone_save_sram_bank(uint16_t bank, const uint8_t *data, uint16_t size,

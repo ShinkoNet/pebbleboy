@@ -11,7 +11,13 @@ from pathlib import Path
 
 
 APP_UUID = "53852c6a-202c-4a64-ae41-a7ed891bd8cf"
-DEFAULT_PERSIST_DIR = Path.home() / ".pebble-sdk" / "4.15.0-dirty-local" / "emery"
+
+
+def default_persist_dir() -> Path:
+    sdk_root = Path.home() / ".pebble-sdk"
+    current = sdk_root / "SDKs" / "current"
+    version = current.resolve().name if current.exists() else "4.17"
+    return sdk_root / version / "emery"
 MSG_CHUNK = 512
 
 
@@ -47,7 +53,7 @@ def clear_sram(db, prefix: str) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("rom_file", type=Path)
-    parser.add_argument("--persist-dir", type=Path, default=DEFAULT_PERSIST_DIR)
+    parser.add_argument("--persist-dir", type=Path, default=default_persist_dir())
     parser.add_argument("--bank", type=int, default=0)
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--value", type=lambda text: int(text, 0), default=0x42)

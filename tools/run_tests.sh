@@ -7,12 +7,14 @@ python3 tools/sync_roms.py
 mkdir -p build
 
 node tools/check_pkjs_hash.js roms/tetris.gb
+node tools/pkjs_library_test.js
 node tools/pkjs_cache_test.js
 node tools/pkjs_bank_test.js
 python3 tools/make_sram_probe_rom.py build/sram_probe.gb --value 0x42
 python3 tools/make_mbc_probe_rom.py build/mbc1_probe.gb --mbc mbc1
 python3 tools/make_mbc_probe_rom.py build/mbc3_probe.gb --mbc mbc3
 python3 tools/make_mbc_probe_rom.py build/mbc5_probe.gb --mbc mbc5
+python3 tools/make_mbc_probe_rom.py build/mbc3_all_banks.gb --mbc mbc3 --banks 64
 python3 tools/make_mbc_probe_rom.py build/mbc1_ram_probe.gb --mbc mbc1 --probe ram
 python3 tools/make_mbc_probe_rom.py build/mbc3_ram_probe.gb --mbc mbc3 --probe ram
 python3 tools/make_mbc_probe_rom.py build/mbc5_ram_probe.gb --mbc mbc5 --probe ram
@@ -47,10 +49,15 @@ cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
   -o build/audio_mixer_test
 build/audio_mixer_test
 
+cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
+  tools/save_test.c src/c/gb_save.c \
+  -o build/save_test
+build/save_test
+
 tetris_out="$(build/desktop_harness roms/tetris.gb 180)"
 echo "$tetris_out"
 case "$tetris_out" in
-  *'title="TETRIS"'*'mbc=0 banks=2'*'loads=2 load_banks=0,1 request_banks=none'*)
+  *'title="TETRIS"'*'mbc=0 banks=2'*'loads=2 '*'load_banks=0,1 request_banks=none'*)
     ;;
   *)
     echo "unexpected Tetris bank profile" >&2
@@ -81,6 +88,17 @@ for mbc in 1 3 5; do
       ;;
   esac
 done
+
+mbc3_all_banks_out="$(build/desktop_harness build/mbc3_all_banks.gb 20)"
+echo "$mbc3_all_banks_out"
+case "$mbc3_all_banks_out" in
+  *'title="MBC3 ALLBANK"'*'mbc=3 banks=64 save=8192 save0=42 save_nonff=1'*'misses=63 loads=64'*'request_banks=none'*)
+    ;;
+  *)
+    echo "unexpected MBC3 64-bank probe profile" >&2
+    exit 1
+    ;;
+esac
 
 for mbc in 1 3 5; do
   mbc_ram_out="$(build/desktop_harness "build/mbc${mbc}_ram_probe.gb" 20)"

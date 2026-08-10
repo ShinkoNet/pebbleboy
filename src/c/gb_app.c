@@ -9,15 +9,25 @@
 #include "gb_core.h"
 #include "gb_input.h"
 #include "gb_phone.h"
+#include "gb_save.h"
 #include "gb_video.h"
 
 #define FRAME_MS 33
+#define FRAME_CATCHUP_LIMIT_MS (FRAME_MS * 4)
 #define FRAMES_PER_TICK 2
 #define MAX_CPU_STEPS_PER_TICK 40000u
 #define PHONE_INFO_RETRY_MS 2000
 #define CART_RAM_WINDOW_SIZE 0x1000u
 #define CART_RAM_BANK_NONE UINT16_MAX
-#define CART_RAM_SAVE_SETTLE_MS 3000
+#define CART_RAM_SAVE_SETTLE_MS 30000
+#define ROM_LIBRARY_MAX 12u
+#define ROM_SELECTOR_VISIBLE_ROWS 5u
+
+#if defined(__GNUC__)
+#define PB_SIZE_OPT __attribute__((optimize("Os")))
+#else
+#define PB_SIZE_OPT
+#endif
 
 static Window *s_window;
 static Layer *s_canvas;
@@ -25,7 +35,14 @@ static AppTimer *s_timer;
 static struct gb_s *s_gb;
 static PbCart *s_cart;
 static bool s_running;
+static bool s_in_focus = true;
 static bool s_phone_offer_seen;
+static bool s_phone_library_seen;
+static bool s_rom_selector;
+static bool s_rom_selection_pending;
+static uint8_t s_rom_count;
+static uint8_t s_rom_selected;
+static char s_rom_titles[ROM_LIBRARY_MAX][17];
 static uint8_t *s_cart_ram;
 static size_t s_cart_ram_size;
 static size_t s_cart_ram_window_size;
@@ -39,18 +56,37 @@ static uint16_t s_cart_ram_loading_bank;
 static uint16_t s_cart_ram_pending_bank;
 static uint16_t s_cart_ram_loaded_bytes;
 static uint64_t s_cart_ram_dirty_ms;
+static bool s_cart_ram_local;
+static PbSave s_local_save;
 static char s_status[80];
 static uint32_t s_frames;
 static uint64_t s_last_log_ms;
 static uint32_t s_last_log_frame;
 static uint64_t s_last_phone_info_request_ms;
 static uint32_t s_frame_budget_hits;
+static uint64_t s_next_frame_deadline_ms;
 static bool s_phone_bank_load_pending;
 static uint16_t s_phone_bank_load_bank;
 static uint16_t s_phone_bank_load_offset;
 static uint16_t s_phone_bank_load_size;
 static bool s_phone_bank_load_demand;
 static uint64_t s_phone_bank_load_ms;
+
+typedef struct {
+  uint32_t cpu_ms;
+  uint32_t audio_ms;
+  uint32_t save_ms;
+  uint32_t render_ms;
+  uint32_t tick_ms;
+  uint32_t max_tick_ms;
+  uint32_t ticks;
+  uint32_t renders;
+  uint32_t presented;
+  uint32_t unchanged;
+  uint32_t catchups;
+} PbPerfProfile;
+
+static PbPerfProfile s_profile;
 
 typedef struct {
   bool gb_halt;
@@ -82,12 +118,35 @@ static PbGbFrameCheckpoint s_frame_checkpoint;
 
 static void prv_frame_timer_cb(void *data);
 static void prv_schedule_frame_timer(uint32_t delay_ms);
+static void prv_update_canvas_frame(void);
+
+static void prv_set_rom_selector(bool selecting) {
+  s_rom_selector = selecting;
+  if (!s_window || !s_canvas) {
+    return;
+  }
+  if (selecting) {
+    layer_set_frame(s_canvas, layer_get_bounds(window_get_root_layer(s_window)));
+    layer_mark_dirty(s_canvas);
+  } else {
+    prv_update_canvas_frame();
+  }
+}
 
 static uint64_t prv_now_ms(void) {
+  static uint64_t last_ms;
   time_t sec;
   uint16_t ms;
   time_ms(&sec, &ms);
-  return (uint64_t)sec * 1000 + ms;
+  uint64_t now = (uint64_t)sec * 1000 + ms;
+  if (now < last_ms && last_ms - now < 1000) {
+    now += 1000;
+  }
+  if (now < last_ms) {
+    return last_ms;
+  }
+  last_ms = now;
+  return now;
 }
 
 static uint32_t prv_elapsed_ms(uint64_t start_ms) {
@@ -101,6 +160,21 @@ static void prv_set_status(const char *status) {
   if (s_canvas) {
     layer_mark_dirty(s_canvas);
   }
+}
+
+static void prv_update_canvas_frame(void) {
+  if (!s_window || !s_canvas) {
+    return;
+  }
+  GRect root_bounds = layer_get_bounds(window_get_root_layer(s_window));
+  GRect frame = root_bounds;
+  if (pb_video_scale() == PB_VIDEO_SCALE_1X) {
+    frame = GRect(root_bounds.origin.x + (root_bounds.size.w - PB_GB_LCD_W) / 2,
+                  root_bounds.origin.y + (root_bounds.size.h - PB_GB_LCD_H) / 2,
+                  PB_GB_LCD_W, PB_GB_LCD_H);
+  }
+  layer_set_frame(s_canvas, frame);
+  layer_mark_dirty(s_canvas);
 }
 
 static uint8_t prv_rom_read(struct gb_s *gb, const uint_fast32_t addr) {
@@ -218,6 +292,9 @@ static bool prv_cart_ram_select_bank(uint16_t bank) {
 static uint8_t prv_cart_ram_read(struct gb_s *gb, const uint_fast32_t addr) {
   (void)gb;
   if (addr < s_cart_ram_size) {
+    if (s_cart_ram_local) {
+      return pb_save_read(&s_local_save, addr);
+    }
     uint16_t bank = (uint16_t)(addr / CART_RAM_WINDOW_SIZE);
     if (!prv_cart_ram_select_bank(bank)) {
       return 0xFF;
@@ -233,6 +310,13 @@ static uint8_t prv_cart_ram_read(struct gb_s *gb, const uint_fast32_t addr) {
 static void prv_cart_ram_write(struct gb_s *gb, const uint_fast32_t addr, const uint8_t value) {
   (void)gb;
   if (addr < s_cart_ram_size) {
+    if (s_cart_ram_local) {
+      if (pb_save_write(&s_local_save, addr, value)) {
+        s_cart_ram_dirty = true;
+        s_cart_ram_dirty_ms = prv_now_ms();
+      }
+      return;
+    }
     uint16_t bank = (uint16_t)(addr / CART_RAM_WINDOW_SIZE);
     if (!prv_cart_ram_select_bank(bank)) {
       return;
@@ -316,6 +400,7 @@ static void prv_restore_frame_checkpoint(void) {
 static void prv_free_save_ram(void) {
   free(s_cart_ram);
   s_cart_ram = NULL;
+  memset(&s_local_save, 0, sizeof(s_local_save));
   s_cart_ram_size = 0;
   s_cart_ram_window_size = 0;
   s_cart_ram_bank = CART_RAM_BANK_NONE;
@@ -328,6 +413,83 @@ static void prv_free_save_ram(void) {
   s_cart_ram_pending_bank = CART_RAM_BANK_NONE;
   s_cart_ram_loaded_bytes = 0;
   s_cart_ram_dirty_ms = 0;
+  s_cart_ram_local = false;
+}
+
+static int prv_local_save_read(uint32_t key, void *data, size_t size, void *context) {
+  (void)context;
+  return persist_read_data(key, data, size);
+}
+
+static int prv_local_save_write(uint32_t key, const void *data, size_t size, void *context) {
+  (void)context;
+  return persist_write_data(key, data, size);
+}
+
+static void prv_flush_local_save(const char *reason) {
+  if (!s_cart_ram_local || !s_cart_ram_dirty) {
+    return;
+  }
+  uint64_t started_ms = prv_now_ms();
+  int flushed = pb_save_flush_all(&s_local_save);
+  s_cart_ram_dirty = pb_save_dirty_count(&s_local_save) != 0;
+  APP_LOG(flushed < 0 ? APP_LOG_LEVEL_ERROR : APP_LOG_LEVEL_INFO,
+          "local SRAM %s flush=%d dirty=%u writes=%u bytes=%lu elapsed=%lu",
+          reason, flushed, (unsigned)pb_save_dirty_count(&s_local_save),
+          (unsigned)s_local_save.write_ops, (unsigned long)s_local_save.write_bytes,
+          (unsigned long)prv_elapsed_ms(started_ms));
+}
+
+static void prv_focus_handler(bool in_focus) {
+  s_in_focus = in_focus;
+  if (!in_focus) {
+    pb_audio_suspend_stream();
+    prv_flush_local_save("focus-loss");
+    return;
+  }
+
+  s_next_frame_deadline_ms = prv_now_ms() + FRAME_MS;
+  if (s_running) {
+    prv_schedule_frame_timer(1);
+  }
+}
+
+static bool prv_init_local_save(size_t save_size) {
+  if (save_size == 0 || save_size > PB_SAVE_MAX_SIZE) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "local SRAM size unsupported: %u", (unsigned)save_size);
+    prv_set_status("SRAM too large");
+    return false;
+  }
+
+  s_cart_ram = malloc(save_size);
+  if (!s_cart_ram) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "local SRAM allocation failed: %u", (unsigned)save_size);
+    prv_set_status("No SRAM heap");
+    return false;
+  }
+
+  uint16_t rom_checksum = (uint16_t)((uint16_t)pb_cart_read(s_cart, 0x14E) << 8);
+  rom_checksum |= pb_cart_read(s_cart, 0x14F);
+  if (!pb_save_init(&s_local_save, s_cart_ram, save_size, rom_checksum,
+                    prv_local_save_read, prv_local_save_write, NULL)) {
+    free(s_cart_ram);
+    s_cart_ram = NULL;
+    prv_set_status("SRAM init failed");
+    return false;
+  }
+
+  s_cart_ram_size = save_size;
+  s_cart_ram_window_size = save_size;
+  s_cart_ram_local = true;
+  APP_LOG(APP_LOG_LEVEL_INFO,
+          "local SRAM ready: %u checksum=%04x restored=%u",
+          (unsigned)save_size, (unsigned)rom_checksum,
+          (unsigned)s_local_save.restored_chunks);
+  APP_LOG(APP_LOG_LEVEL_INFO,
+          "local SRAM reads=%u bytes=%lu heap=%u/%u",
+          (unsigned)s_local_save.read_ops, (unsigned long)s_local_save.read_bytes,
+          (unsigned)heap_bytes_free(), (unsigned)heap_bytes_used());
+  return true;
 }
 
 static const char *prv_init_error_name(enum gb_init_error_e err) {
@@ -369,6 +531,7 @@ static bool prv_start_from_cart(const char *source_name) {
 
   gb_init_lcd(s_gb, prv_lcd_draw_line);
   s_gb->direct.frame_skip = true;
+  s_gb->direct.interlace = false;
 
   size_t save_size = 0;
   if (gb_get_save_size_s(s_gb, &save_size) == 0 && save_size > 0) {
@@ -381,8 +544,10 @@ static bool prv_start_from_cart(const char *source_name) {
       APP_LOG(APP_LOG_LEVEL_INFO,
               "phone SRAM window deferred: %u/%u bytes",
               (unsigned)s_cart_ram_window_size, (unsigned)save_size);
+    } else if (!prv_init_local_save(save_size)) {
+      return false;
     } else {
-      APP_LOG(APP_LOG_LEVEL_WARNING, "save RAM unavailable for non-phone source: %u",
+      APP_LOG(APP_LOG_LEVEL_INFO, "using local persistent SRAM: %u",
               (unsigned)save_size);
     }
   }
@@ -397,6 +562,7 @@ static bool prv_start_from_cart(const char *source_name) {
   s_last_log_frame = 0;
   s_last_log_ms = prv_now_ms();
   s_frame_budget_hits = 0;
+  memset(&s_profile, 0, sizeof(s_profile));
   s_running = true;
   return true;
 }
@@ -463,6 +629,12 @@ static void prv_maybe_continue_cart_ram(void) {
 }
 
 static void prv_maybe_flush_cart_ram(uint64_t now) {
+  /* Local persistence is synchronous physical-flash I/O and can block an app
+   * tick for over 100 ms. Flush it on focus loss/shutdown instead; phone SRAM
+   * remains asynchronous and can retain its normal settle timer. */
+  if (s_cart_ram_local) {
+    return;
+  }
   if (!s_cart_ram || !s_cart_ram_dirty || s_cart_ram_bank == CART_RAM_BANK_NONE ||
       s_cart_ram_paused || s_cart_ram_loading || s_cart_ram_saving) {
     return;
@@ -495,15 +667,54 @@ static void prv_maybe_prefetch_next_phone_fill(const PbPhoneEvent *event, bool a
   pb_cart_prefetch_addr(s_cart, addr);
 }
 
-static void prv_phone_event(const PbPhoneEvent *event, void *context) {
+static PB_SIZE_OPT void prv_phone_event(const PbPhoneEvent *event, void *context) {
   (void)context;
   switch (event->type) {
+    case PB_PHONE_EVENT_ROM_LIST_BEGIN:
+      memset(s_rom_titles, 0, sizeof(s_rom_titles));
+      s_rom_count = (uint8_t)(event->size > ROM_LIBRARY_MAX
+                                  ? ROM_LIBRARY_MAX
+                                  : event->size);
+      s_rom_selected = 0;
+      s_phone_library_seen = false;
+      prv_set_status("Loading ROM library");
+      break;
+    case PB_PHONE_EVENT_ROM_LIST_ITEM:
+      if (event->bank < ROM_LIBRARY_MAX) {
+        snprintf(s_rom_titles[event->bank], sizeof(s_rom_titles[event->bank]),
+                 "%s", event->title[0] ? event->title : "DMG ROM");
+      }
+      break;
+    case PB_PHONE_EVENT_ROM_LIST_END:
+      s_rom_count = (uint8_t)(event->size > ROM_LIBRARY_MAX
+                                  ? ROM_LIBRARY_MAX
+                                  : event->size);
+      s_phone_library_seen = true;
+      if (s_rom_count == 0) {
+        s_rom_selection_pending = false;
+        prv_set_status("Add ROMs in app settings");
+      } else if (s_rom_count == 1) {
+        s_rom_selection_pending = true;
+        s_rom_selected = 0;
+        prv_set_status("Loading ROM");
+        gb_phone_select_rom(0);
+        s_last_phone_info_request_ms = prv_now_ms();
+      } else {
+        s_rom_selection_pending = false;
+        prv_set_rom_selector(true);
+      }
+      if (s_canvas) {
+        layer_mark_dirty(s_canvas);
+      }
+      break;
     case PB_PHONE_EVENT_INFO:
       if (s_cart && s_cart->mode == PB_CART_MODE_PHONE) {
         APP_LOG(APP_LOG_LEVEL_INFO, "ignoring duplicate phone ROM info");
         break;
       }
       s_phone_offer_seen = true;
+      s_rom_selection_pending = false;
+      prv_set_rom_selector(false);
       s_running = false;
       prv_free_save_ram();
       APP_LOG(APP_LOG_LEVEL_INFO, "phone info title=%s size=%lu cart=%u scale=%u",
@@ -512,6 +723,7 @@ static void prv_phone_event(const PbPhoneEvent *event, void *context) {
       pb_video_set_scale(event->video_scale <= PB_VIDEO_SCALE_ASPECT_FIT
                              ? (PbVideoScale)event->video_scale
                              : PB_VIDEO_SCALE_1X);
+      prv_update_canvas_frame();
       pb_audio_set_enabled(event->audio_enabled);
       if (pb_cart_init_phone(s_cart, event->size, prv_request_phone_bank, NULL)) {
         snprintf(s_status, sizeof(s_status), "Phone ROM %s",
@@ -603,26 +815,55 @@ static void prv_log_perf(void) {
   uint32_t frame_delta = s_frames - s_last_log_frame;
   uint32_t ms_delta = (uint32_t)(now - s_last_log_ms);
   APP_LOG(APP_LOG_LEVEL_INFO,
-          "fps=%u cache h=%lu m=%lu loads=%lu req=%lu last_miss=%u last_load=%u last_load_ms=%lu heap free=%u used=%u",
+          "fps=%u cache m=%lu fills=%lu req=%lu last=%u/%u load_ms=%lu heap=%u/%u",
           (unsigned)((frame_delta * 1000u) / (ms_delta ? ms_delta : 1)),
-          stats->hits, stats->misses, stats->loads, stats->phone_requests,
+          stats->misses, stats->loads, stats->phone_requests,
           (unsigned)stats->last_miss_bank, (unsigned)stats->last_load_bank,
           stats->last_load_ms, (unsigned)heap_bytes_free(), (unsigned)heap_bytes_used());
-  APP_LOG(APP_LOG_LEVEL_INFO, "audio pumps=%lu partial=%lu errors=%lu last_write=%lu",
+  APP_LOG(APP_LOG_LEVEL_INFO,
+          "io reads=%lu bytes=%lu save dirty=%u reads=%u/%lu writes=%u/%lu audio=%lu/%lu/%lu",
+          stats->source_reads, stats->source_bytes,
+          (unsigned)(s_cart_ram_local ? pb_save_dirty_count(&s_local_save) : 0),
+          (unsigned)(s_cart_ram_local ? s_local_save.read_ops : 0),
+          (unsigned long)(s_cart_ram_local ? s_local_save.read_bytes : 0),
+          (unsigned)(s_cart_ram_local ? s_local_save.write_ops : 0),
+          (unsigned long)(s_cart_ram_local ? s_local_save.write_bytes : 0),
           audio_stats->pumps, audio_stats->partial_writes,
-          audio_stats->stream_errors, audio_stats->last_write_size);
+          audio_stats->stream_errors);
+  APP_LOG(APP_LOG_LEVEL_INFO,
+          "mix gen=%lu nz=%u/%u peak=%u ch=%x nr50=%02x nr51=%02x nr52=%02x",
+          audio_stats->generated_buffers,
+          (unsigned)audio_stats->last_nonzero_samples,
+          (unsigned)PB_AUDIO_PUMP_SAMPLES, (unsigned)audio_stats->last_peak,
+          (unsigned)audio_stats->active_channels, (unsigned)audio_stats->nr50,
+          (unsigned)audio_stats->nr51, (unsigned)audio_stats->nr52);
+  APP_LOG(APP_LOG_LEVEL_INFO,
+          "profile ms cpu=%lu audio=%lu save=%lu render=%lu tick=%lu/%lu max=%lu present=%lu draw=%lu same=%lu catch=%lu",
+          (unsigned long)s_profile.cpu_ms, (unsigned long)s_profile.audio_ms,
+          (unsigned long)s_profile.save_ms, (unsigned long)s_profile.render_ms,
+          (unsigned long)s_profile.tick_ms, (unsigned long)s_profile.ticks,
+          (unsigned long)s_profile.max_tick_ms, (unsigned long)s_profile.presented,
+          (unsigned long)s_profile.renders, (unsigned long)s_profile.unchanged,
+          (unsigned long)s_profile.catchups);
   s_last_log_ms = now;
   s_last_log_frame = s_frames;
+  memset(&s_profile, 0, sizeof(s_profile));
 }
 
 static void prv_maybe_request_phone_info(uint64_t now) {
-  if (s_phone_offer_seen || (s_cart && s_cart->mode == PB_CART_MODE_PHONE)) {
+  if (s_phone_offer_seen || (s_cart && s_cart->mode != PB_CART_MODE_NONE)) {
     return;
   }
   if (now - s_last_phone_info_request_ms < PHONE_INFO_RETRY_MS) {
     return;
   }
-  gb_phone_request_info();
+  if (!s_phone_library_seen) {
+    gb_phone_request_rom_list();
+  } else if (s_rom_selection_pending) {
+    gb_phone_select_rom(s_rom_selected);
+  } else {
+    return;
+  }
   s_last_phone_info_request_ms = now;
 }
 
@@ -664,6 +905,17 @@ static bool prv_run_one_frame(uint32_t *step_budget) {
   s_gb->direct.joypad = pb_input_joypad();
   s_gb->gb_frame = false;
 
+  if (s_cart->mode == PB_CART_MODE_RESOURCE) {
+    while (!s_gb->gb_frame) {
+      __gb_step_cpu(s_gb);
+    }
+    if (s_cart->failed) {
+      return false;
+    }
+    s_frames++;
+    return true;
+  }
+
   while (!s_gb->gb_frame && *step_budget) {
     if (pb_cart_paused(s_cart) || s_cart_ram_paused || !prv_ensure_cpu_fetch_window()) {
       return false;
@@ -704,60 +956,195 @@ static void prv_frame_timer_cb(void *data) {
     prv_start_from_cart("phone");
   }
 
-  bool can_run = s_running && !pb_cart_paused(s_cart) && !s_cart_ram_paused;
+  bool can_run = s_running && s_in_focus && !pb_cart_paused(s_cart) &&
+                 !s_cart_ram_paused;
   if (can_run) {
     uint32_t step_budget = MAX_CPU_STEPS_PER_TICK;
-    bool completed_frame = false;
+    uint8_t completed_frames = 0;
     for (int i = 0; i < FRAMES_PER_TICK && step_budget; i++) {
+      uint64_t phase_start_ms = prv_now_ms();
       if (!prv_run_one_frame(&step_budget)) {
+        s_profile.cpu_ms += prv_elapsed_ms(phase_start_ms);
         break;
       }
-      completed_frame = true;
-    }
-    if (completed_frame) {
+      s_profile.cpu_ms += prv_elapsed_ms(phase_start_ms);
+      completed_frames++;
+
+      // Capture APU state after each emulated frame. Pumping only after both
+      // frames discarded every other 60 Hz register update and made music
+      // transitions sound coarse even when the PCM stream itself was healthy.
+      phase_start_ms = prv_now_ms();
       pb_audio_pump();
-    } else {
-      pb_audio_pump_silence();
+      s_profile.audio_ms += prv_elapsed_ms(phase_start_ms);
     }
-    prv_log_perf();
+
+    while (completed_frames < FRAMES_PER_TICK) {
+      uint64_t phase_start_ms = prv_now_ms();
+      pb_audio_pump_silence();
+      s_profile.audio_ms += prv_elapsed_ms(phase_start_ms);
+      completed_frames++;
+    }
+    uint64_t phase_start_ms = prv_now_ms();
     prv_maybe_flush_cart_ram(prv_now_ms());
+    s_profile.save_ms += prv_elapsed_ms(phase_start_ms);
   } else {
-    if (s_running) {
+    if (s_running && s_in_focus) {
       pb_audio_pump_silence();
     } else {
       pb_audio_suspend_stream();
     }
   }
 
-  if (s_canvas) {
+  if (s_canvas && pb_video_take_changed()) {
     layer_mark_dirty(s_canvas);
+    s_profile.presented++;
+  } else if (s_running) {
+    s_profile.unchanged++;
   }
 
-  uint64_t elapsed = prv_now_ms() - tick_start_ms;
-  uint32_t delay = elapsed >= FRAME_MS ? 1 : (uint32_t)(FRAME_MS - elapsed);
+  uint64_t tick_end_ms = prv_now_ms();
+  uint64_t elapsed = tick_end_ms - tick_start_ms;
+  if (s_running) {
+    uint32_t elapsed_ms = (uint32_t)elapsed;
+    s_profile.tick_ms += elapsed_ms;
+    if (elapsed_ms > s_profile.max_tick_ms) {
+      s_profile.max_tick_ms = elapsed_ms;
+    }
+    s_profile.ticks++;
+    prv_log_perf();
+  }
+  if (!s_next_frame_deadline_ms) {
+    s_next_frame_deadline_ms = tick_start_ms;
+  }
+  s_next_frame_deadline_ms += FRAME_MS;
+  if (tick_end_ms > s_next_frame_deadline_ms + FRAME_CATCHUP_LIMIT_MS) {
+    s_next_frame_deadline_ms = tick_end_ms + FRAME_MS;
+  }
+  uint32_t delay = 1;
+  if (tick_end_ms < s_next_frame_deadline_ms) {
+    delay = (uint32_t)(s_next_frame_deadline_ms - tick_end_ms);
+  } else {
+    s_profile.catchups++;
+  }
   prv_schedule_frame_timer(delay);
 }
 
-static void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
+static PB_SIZE_OPT void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
+  uint64_t render_start_ms = prv_now_ms();
   GRect bounds = layer_get_bounds(layer);
-  pb_video_render(ctx, bounds);
+
+  if (s_rom_selector) {
+    graphics_context_set_fill_color(ctx, GColorBlack);
+    graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+    graphics_context_set_text_color(ctx, GColorWhite);
+    graphics_draw_text(ctx, "Choose a game",
+                       fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                       GRect(4, 4, bounds.size.w - 8, 32),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+
+    uint8_t first = 0;
+    if (s_rom_selected >= ROM_SELECTOR_VISIBLE_ROWS) {
+      first = (uint8_t)(s_rom_selected - ROM_SELECTOR_VISIBLE_ROWS + 1);
+    }
+    if (first + ROM_SELECTOR_VISIBLE_ROWS > s_rom_count &&
+        s_rom_count > ROM_SELECTOR_VISIBLE_ROWS) {
+      first = (uint8_t)(s_rom_count - ROM_SELECTOR_VISIBLE_ROWS);
+    }
+    for (uint8_t row = 0; row < ROM_SELECTOR_VISIBLE_ROWS; row++) {
+      uint8_t index = (uint8_t)(first + row);
+      if (index >= s_rom_count) {
+        break;
+      }
+      GRect item = GRect(8, 40 + row * 30, bounds.size.w - 16, 28);
+      bool selected = index == s_rom_selected;
+      if (selected) {
+        graphics_context_set_fill_color(ctx, GColorWhite);
+        graphics_fill_rect(ctx, item, 4, GCornersAll);
+      }
+      graphics_context_set_text_color(ctx, selected ? GColorBlack : GColorWhite);
+      graphics_draw_text(ctx,
+                         s_rom_titles[index][0] ? s_rom_titles[index] : "DMG ROM",
+                         fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD), item,
+                         GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+    }
+    graphics_context_set_text_color(ctx, GColorWhite);
+    graphics_draw_text(ctx, "UP/DOWN choose  SELECT play",
+                       fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                       GRect(4, bounds.size.h - 28, bounds.size.w - 8, 24),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+    s_profile.render_ms += prv_elapsed_ms(render_start_ms);
+    s_profile.renders++;
+    return;
+  }
+
+  GRect root_frame = layer_get_frame(window_get_root_layer(s_window));
+  PbVideoScale scale = pb_video_scale();
+  GRect render_bounds = scale == PB_VIDEO_SCALE_1X
+                            ? layer_get_frame(layer)
+                            : root_frame;
+  if (scale == PB_VIDEO_SCALE_1X) {
+    render_bounds.origin.x += root_frame.origin.x;
+    render_bounds.origin.y += root_frame.origin.y;
+  }
+  pb_video_render(ctx, render_bounds);
 
   if (!s_running || !s_cart || pb_cart_paused(s_cart) || s_cart_ram_paused) {
     graphics_context_set_text_color(ctx, GColorWhite);
     graphics_draw_text(ctx, s_status, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(4, PBL_DISPLAY_HEIGHT - 34, PBL_DISPLAY_WIDTH - 8, 30),
+                       GRect(4, bounds.size.h - 34, bounds.size.w - 8, 30),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
   }
+  s_profile.render_ms += prv_elapsed_ms(render_start_ms);
+  s_profile.renders++;
 }
 
-static void prv_raw_down_handler(ClickRecognizerRef ref, void *context) {
+static void prv_select_rom_delta(int delta) {
+  if (!s_rom_selector || s_rom_count == 0) {
+    return;
+  }
+  int selected = (int)s_rom_selected + delta;
+  if (selected < 0) {
+    selected = s_rom_count - 1;
+  } else if (selected >= s_rom_count) {
+    selected = 0;
+  }
+  s_rom_selected = (uint8_t)selected;
+  layer_mark_dirty(s_canvas);
+}
+
+static void prv_launch_selected_rom(void) {
+  if (!s_rom_selector || s_rom_selected >= s_rom_count) {
+    return;
+  }
+  s_rom_selection_pending = true;
+  prv_set_rom_selector(false);
+  prv_set_status("Loading selected ROM");
+  gb_phone_select_rom(s_rom_selected);
+  s_last_phone_info_request_ms = prv_now_ms();
+}
+
+static PB_SIZE_OPT void prv_raw_down_handler(ClickRecognizerRef ref, void *context) {
   (void)ref;
+  uint8_t mask = (uint8_t)(uintptr_t)context;
+  if (s_rom_selector) {
+    if (mask == JOYPAD_START) {
+      prv_select_rom_delta(-1);
+    } else if (mask == JOYPAD_B) {
+      prv_select_rom_delta(1);
+    } else if (mask == JOYPAD_A) {
+      prv_launch_selected_rom();
+    }
+    return;
+  }
   pb_input_release_touch();
-  pb_input_press((uint8_t)(uintptr_t)context);
+  pb_input_press(mask);
 }
 
 static void prv_raw_up_handler(ClickRecognizerRef ref, void *context) {
   (void)ref;
+  if (s_rom_selector) {
+    return;
+  }
   pb_input_release((uint8_t)(uintptr_t)context);
 }
 
@@ -769,6 +1156,10 @@ static void prv_back_release_cb(void *data) {
 static void prv_back_click_handler(ClickRecognizerRef ref, void *context) {
   (void)ref;
   (void)context;
+  if (s_rom_selector) {
+    window_stack_pop(true);
+    return;
+  }
   pb_input_release_touch();
   pb_input_press(JOYPAD_SELECT);
   app_timer_register(80, prv_back_release_cb, NULL);
@@ -804,6 +1195,10 @@ static void prv_touch_watchdog_cb(void *data) {
 
 static void prv_touch_handler(const TouchEvent *event, void *context) {
   (void)context;
+  if (s_rom_selector) {
+    prv_touch_release();
+    return;
+  }
   if (event->type == TouchEvent_Liftoff) {
     prv_touch_release();
     return;
@@ -817,16 +1212,25 @@ static void prv_touch_handler(const TouchEvent *event, void *context) {
 }
 #endif
 
-static void prv_window_load(Window *window) {
+static PB_SIZE_OPT void prv_window_load(Window *window) {
+  WatchInfoVersion fw = watch_info_get_firmware_version();
+  APP_LOG(APP_LOG_LEVEL_INFO, "watch firmware=%u.%u.%u model=%u",
+          (unsigned)fw.major, (unsigned)fw.minor, (unsigned)fw.patch,
+          (unsigned)watch_info_get_model());
+
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
+  window_set_background_color(window, GColorBlack);
   s_canvas = layer_create(bounds);
   layer_set_update_proc(s_canvas, prv_canvas_update_proc);
   layer_add_child(window_layer, s_canvas);
 
   pb_video_init();
+  prv_update_canvas_frame();
   pb_input_init();
   pb_audio_init();
+  s_in_focus = true;
+  app_focus_service_subscribe(prv_focus_handler);
   s_cart = malloc(sizeof(*s_cart));
   s_gb = malloc(sizeof(*s_gb));
   if (!s_cart || !s_gb) {
@@ -835,17 +1239,42 @@ static void prv_window_load(Window *window) {
   }
   pb_cart_init_empty(s_cart);
   s_phone_offer_seen = false;
+  s_phone_library_seen = false;
+  s_rom_selector = false;
+  s_rom_selection_pending = false;
+  s_rom_count = 0;
+  s_rom_selected = 0;
+  memset(s_rom_titles, 0, sizeof(s_rom_titles));
   s_last_phone_info_request_ms = 0;
 
   gb_phone_init(s_cart, prv_phone_event, NULL);
-  prv_set_status("Loading ROM URL");
-  gb_phone_request_info();
-  s_last_phone_info_request_ms = prv_now_ms();
+
+  bool started_local = false;
+#ifdef RESOURCE_ID_CARTRIDGE
+  prv_set_status("Loading local ROM");
+  if (pb_cart_init_resource(s_cart, RESOURCE_ID_CARTRIDGE)) {
+    started_local = prv_start_from_cart("flash");
+    if (started_local) {
+      pb_audio_set_enabled(true);
+    }
+  }
+  if (!started_local) {
+    APP_LOG(APP_LOG_LEVEL_WARNING, "local ROM failed, falling back to phone");
+    pb_cart_init_empty(s_cart);
+  }
+#endif
+
+  if (!started_local) {
+    prv_set_status("Loading ROM library");
+    gb_phone_request_rom_list();
+    s_last_phone_info_request_ms = prv_now_ms();
+  }
 
 #ifdef PBL_TOUCH
   touch_service_subscribe(prv_touch_handler, NULL);
 #endif
 
+  s_next_frame_deadline_ms = prv_now_ms() + FRAME_MS;
   prv_schedule_frame_timer(FRAME_MS);
 }
 
@@ -858,8 +1287,10 @@ static void prv_window_unload(Window *window) {
     app_timer_cancel(s_timer);
     s_timer = NULL;
   }
+  app_focus_service_unsubscribe();
   gb_phone_deinit();
   pb_audio_deinit();
+  prv_flush_local_save("shutdown");
   prv_free_save_ram();
   free(s_cart);
   free(s_gb);

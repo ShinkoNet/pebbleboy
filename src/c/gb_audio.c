@@ -9,16 +9,17 @@
 #define AUDIO_REG_BASE 0xFF10u
 #define AUDIO_REG_COUNT 0x30u
 #define AUDIO_SAMPLE_RATE 16000u
-#define AUDIO_PUMP_MS 33u
-#define AUDIO_PUMP_SAMPLES ((AUDIO_SAMPLE_RATE * AUDIO_PUMP_MS) / 1000u)
+#define AUDIO_PUMP_SAMPLES PB_AUDIO_PUMP_SAMPLES
 #define AUDIO_PHASE_ONE 65536u
 #define AUDIO_WAVE_PHASE_ONE (32u * AUDIO_PHASE_ONE)
 #define AUDIO_ENV_TICK_SAMPLES (AUDIO_SAMPLE_RATE / 64u)
-#define AUDIO_MAX_CONSECUTIVE_PARTIAL_WRITES 4u
+#define AUDIO_MIX_SCALE 4
+#define AUDIO_DC_BLOCK_Q15 32604
 
 typedef struct {
   bool enabled;
   uint32_t phase;
+  uint32_t step;
   uint8_t volume;
   uint32_t env_samples;
 } PulseChannel;
@@ -26,11 +27,13 @@ typedef struct {
 typedef struct {
   bool enabled;
   uint32_t phase;
+  uint32_t step;
 } WaveChannel;
 
 typedef struct {
   bool enabled;
   uint32_t phase;
+  uint32_t step;
   uint16_t lfsr;
   uint8_t volume;
   uint32_t env_samples;
@@ -39,20 +42,22 @@ typedef struct {
 static bool s_requested;
 static bool s_enabled;
 static uint8_t s_regs[AUDIO_REG_COUNT];
-static int8_t s_buffer[AUDIO_PUMP_SAMPLES];
+static int16_t s_buffer[AUDIO_PUMP_SAMPLES];
 static PulseChannel s_pulse1;
 static PulseChannel s_pulse2;
 static WaveChannel s_wave;
 static NoiseChannel s_noise;
 static PbAudioStats s_stats;
-static uint8_t s_consecutive_partial_writes;
+static uint16_t s_pending_offset;
+static uint16_t s_pending_size;
+static bool s_master_enabled;
+static uint8_t s_route_mask;
+static uint8_t s_channel_gain[4];
+static int32_t s_dc_prev_input;
+static int32_t s_dc_prev_output;
 
 static uint8_t prv_idx(uint16_t addr) {
   return (uint8_t)(addr - AUDIO_REG_BASE);
-}
-
-static bool prv_master_enabled(void) {
-  return (s_regs[0x16] & 0x80) != 0;
 }
 
 static uint16_t prv_freq_raw(uint8_t lo_idx, uint8_t hi_idx) {
@@ -64,8 +69,8 @@ static uint32_t prv_pulse_step(uint8_t lo_idx, uint8_t hi_idx) {
   if (raw >= 2048) {
     return 0;
   }
-  uint32_t hz = 131072u / (2048u - raw);
-  return (uint32_t)(((uint64_t)hz * AUDIO_PHASE_ONE) / AUDIO_SAMPLE_RATE);
+  return (uint32_t)(((uint64_t)131072u * AUDIO_PHASE_ONE) /
+                    ((uint32_t)(2048u - raw) * AUDIO_SAMPLE_RATE));
 }
 
 static uint32_t prv_wave_step(void) {
@@ -73,8 +78,8 @@ static uint32_t prv_wave_step(void) {
   if (raw >= 2048) {
     return 0;
   }
-  uint32_t hz = 65536u / (2048u - raw);
-  return (uint32_t)(((uint64_t)hz * AUDIO_WAVE_PHASE_ONE) / AUDIO_SAMPLE_RATE);
+  return (uint32_t)(((uint64_t)65536u * AUDIO_WAVE_PHASE_ONE) /
+                    ((uint32_t)(2048u - raw) * AUDIO_SAMPLE_RATE));
 }
 
 static uint32_t prv_noise_step(void) {
@@ -111,9 +116,8 @@ static void prv_env_tick(uint8_t env_idx, uint8_t *volume, uint32_t *samples) {
   }
 }
 
-static int16_t prv_render_pulse(PulseChannel *ch, uint8_t duty_idx, uint8_t env_idx,
-                                uint8_t lo_idx, uint8_t hi_idx) {
-  if (!prv_master_enabled() || !ch->enabled || (s_regs[env_idx] & 0xF8) == 0) {
+static int16_t prv_render_pulse(PulseChannel *ch, uint8_t duty_idx, uint8_t env_idx) {
+  if (!ch->enabled || (s_regs[env_idx] & 0xF8) == 0) {
     return 0;
   }
 
@@ -123,8 +127,7 @@ static int16_t prv_render_pulse(PulseChannel *ch, uint8_t duty_idx, uint8_t env_
     AUDIO_PHASE_ONE / 2,
     (AUDIO_PHASE_ONE * 3) / 4
   };
-  uint32_t step = prv_pulse_step(lo_idx, hi_idx);
-  ch->phase = (ch->phase + step) & (AUDIO_PHASE_ONE - 1u);
+  ch->phase = (ch->phase + ch->step) & (AUDIO_PHASE_ONE - 1u);
   prv_env_tick(env_idx, &ch->volume, &ch->env_samples);
   uint8_t duty = s_regs[duty_idx] >> 6;
   int16_t sample = ch->phase < thresholds[duty] ? 1 : -1;
@@ -132,7 +135,7 @@ static int16_t prv_render_pulse(PulseChannel *ch, uint8_t duty_idx, uint8_t env_
 }
 
 static int16_t prv_render_wave(void) {
-  if (!prv_master_enabled() || !s_wave.enabled || (s_regs[0x0A] & 0x80) == 0) {
+  if (!s_wave.enabled || (s_regs[0x0A] & 0x80) == 0) {
     return 0;
   }
 
@@ -141,7 +144,7 @@ static int16_t prv_render_wave(void) {
     return 0;
   }
 
-  s_wave.phase += prv_wave_step();
+  s_wave.phase += s_wave.step;
   while (s_wave.phase >= AUDIO_WAVE_PHASE_ONE) {
     s_wave.phase -= AUDIO_WAVE_PHASE_ONE;
   }
@@ -167,11 +170,11 @@ static void prv_noise_clock(void) {
 }
 
 static int16_t prv_render_noise(void) {
-  if (!prv_master_enabled() || !s_noise.enabled || (s_regs[0x11] & 0xF8) == 0) {
+  if (!s_noise.enabled || (s_regs[0x11] & 0xF8) == 0) {
     return 0;
   }
 
-  s_noise.phase += prv_noise_step();
+  s_noise.phase += s_noise.step;
   while (s_noise.phase >= AUDIO_PHASE_ONE) {
     s_noise.phase -= AUDIO_PHASE_ONE;
     prv_noise_clock();
@@ -181,37 +184,46 @@ static int16_t prv_render_noise(void) {
   return (int16_t)(sample * (int16_t)s_noise.volume * 8);
 }
 
-static bool prv_channel_routed(uint8_t channel) {
-  uint8_t nr51 = s_regs[0x15];
-  uint8_t mask = (uint8_t)((1u << channel) | (1u << (channel + 4)));
-  return (nr51 & mask) != 0;
+static int16_t prv_mix_sample(void) {
+  if (!s_master_enabled) {
+    return 0;
+  }
+
+  // Advance every enabled channel even while it is temporarily unrouted. This
+  // keeps phase and envelope state continuous when NR51 changes. Fold the two
+  // GB output terminals into mono with their independent NR50 gains.
+  int32_t mix = 0;
+  mix += (int32_t)prv_render_pulse(&s_pulse1, 0x01, 0x02) * s_channel_gain[0];
+  mix += (int32_t)prv_render_pulse(&s_pulse2, 0x06, 0x07) * s_channel_gain[1];
+  mix += (int32_t)prv_render_wave() * s_channel_gain[2];
+  mix += (int32_t)prv_render_noise() * s_channel_gain[3];
+  mix *= AUDIO_MIX_SCALE;
+
+  // The DMG output is AC-coupled. A cheap fixed-point DC blocker removes the
+  // large offsets from 12.5/25/75% pulse duty cycles without blurring edges.
+  int32_t filtered = mix - s_dc_prev_input +
+                     ((s_dc_prev_output * AUDIO_DC_BLOCK_Q15) >> 15);
+  s_dc_prev_input = mix;
+  if (filtered > INT16_MAX) {
+    filtered = INT16_MAX;
+  } else if (filtered < INT16_MIN) {
+    filtered = INT16_MIN;
+  }
+  s_dc_prev_output = filtered;
+  return (int16_t)filtered;
 }
 
-static int8_t prv_mix_sample(void) {
-  int16_t mix = 0;
-  if (prv_channel_routed(0)) {
-    mix += prv_render_pulse(&s_pulse1, 0x01, 0x02, 0x03, 0x04);
-  }
-  if (prv_channel_routed(1)) {
-    mix += prv_render_pulse(&s_pulse2, 0x06, 0x07, 0x08, 0x09);
-  }
-  if (prv_channel_routed(2)) {
-    mix += prv_render_wave();
-  }
-  if (prv_channel_routed(3)) {
-    mix += prv_render_noise();
-  }
-
+static void prv_update_mix_gains(void) {
   uint8_t nr50 = s_regs[0x14];
-  uint8_t volume = (uint8_t)(((nr50 & 0x07) + ((nr50 >> 4) & 0x07) + 2) / 2);
-  mix = (int16_t)((mix * volume) / 7);
-  if (mix > 127) {
-    return 127;
+  uint8_t nr51 = s_regs[0x15];
+  uint8_t right_gain = (uint8_t)((nr50 & 0x07) + 1);
+  uint8_t left_gain = (uint8_t)(((nr50 >> 4) & 0x07) + 1);
+  s_route_mask = (uint8_t)((nr51 | (nr51 >> 4)) & 0x0F);
+  for (uint8_t channel = 0; channel < 4; channel++) {
+    s_channel_gain[channel] =
+        (uint8_t)(((nr51 & (1u << channel)) ? right_gain : 0) +
+                  ((nr51 & (1u << (channel + 4))) ? left_gain : 0));
   }
-  if (mix < -128) {
-    return -128;
-  }
-  return (int8_t)mix;
 }
 
 static void prv_trigger_pulse(PulseChannel *ch, uint8_t env_idx) {
@@ -241,7 +253,13 @@ void pb_audio_init(void) {
   memset(&s_wave, 0, sizeof(s_wave));
   memset(&s_noise, 0, sizeof(s_noise));
   memset(&s_stats, 0, sizeof(s_stats));
-  s_consecutive_partial_writes = 0;
+  s_pending_offset = 0;
+  s_pending_size = 0;
+  s_master_enabled = false;
+  s_route_mask = 0;
+  memset(s_channel_gain, 0, sizeof(s_channel_gain));
+  s_dc_prev_input = 0;
+  s_dc_prev_output = 0;
   s_requested = false;
   s_enabled = false;
 }
@@ -251,14 +269,16 @@ static bool prv_open_stream(void) {
   if (s_enabled) {
     return true;
   }
-  s_enabled = speaker_stream_open(SpeakerPcmFormat_16kHz_8bit, 50);
+  s_enabled = speaker_stream_open(SpeakerPcmFormat_16kHz_16bit, 50);
   if (!s_enabled) {
     s_stats.stream_errors++;
-    APP_LOG(APP_LOG_LEVEL_WARNING, "speaker stream unavailable errors=%lu",
-            s_stats.stream_errors);
+    if ((s_stats.stream_errors & 0x3Fu) == 1) {
+      APP_LOG(APP_LOG_LEVEL_WARNING, "speaker stream unavailable errors=%lu",
+              s_stats.stream_errors);
+    }
     return false;
   }
-  APP_LOG(APP_LOG_LEVEL_INFO, "speaker stream enabled 16kHz 8-bit");
+  APP_LOG(APP_LOG_LEVEL_INFO, "speaker stream enabled 16kHz 16-bit");
   return true;
 }
 
@@ -270,6 +290,8 @@ static void prv_close_stream(const char *reason) {
   if (reason) {
     APP_LOG(APP_LOG_LEVEL_WARNING, "%s", reason);
   }
+  s_pending_offset = 0;
+  s_pending_size = 0;
 }
 #endif
 
@@ -289,7 +311,6 @@ void pb_audio_set_enabled(bool enabled) {
 void pb_audio_suspend_stream(void) {
 #ifndef PB_DESKTOP
   prv_close_stream(NULL);
-  s_consecutive_partial_writes = 0;
 #else
   (void)s_enabled;
 #endif
@@ -298,34 +319,40 @@ void pb_audio_suspend_stream(void) {
 static void prv_write_buffer(void) {
   s_stats.pumps++;
 
+  uint16_t remaining = (uint16_t)(s_pending_size - s_pending_offset);
+  if (!remaining) {
+    return;
+  }
+
 #ifndef PB_DESKTOP
-  uint32_t written = speaker_stream_write(s_buffer, sizeof(s_buffer));
+  uint32_t written = speaker_stream_write(
+      (const uint8_t *)s_buffer + s_pending_offset, remaining);
+#else
+  uint32_t written = remaining;
+#endif
   s_stats.last_write_size = written;
-  if (written < sizeof(s_buffer)) {
+  s_pending_offset = (uint16_t)(s_pending_offset + written);
+  if (written < remaining) {
     s_stats.partial_writes++;
-    s_consecutive_partial_writes++;
-    if ((s_stats.partial_writes & 0x1F) == 1) {
+#ifndef PB_DESKTOP
+    if ((s_stats.partial_writes & 0xFFu) == 1) {
       APP_LOG(APP_LOG_LEVEL_WARNING, "speaker partial write %lu/%u partials=%lu",
-              written, (unsigned)sizeof(s_buffer),
+              written, (unsigned)remaining,
               (unsigned long)s_stats.partial_writes);
     }
-    if (written == 0 ||
-        s_consecutive_partial_writes >= AUDIO_MAX_CONSECUTIVE_PARTIAL_WRITES) {
-      s_stats.stream_errors++;
-      prv_close_stream("speaker stream suspended after write backpressure");
-      return;
-    }
-  } else {
-    s_consecutive_partial_writes = 0;
+#endif
   }
-  if ((s_stats.pumps & 0x3Fu) == 1) {
+#ifndef PB_DESKTOP
+  if ((s_stats.pumps & 0x1FFu) == 1) {
     APP_LOG(APP_LOG_LEVEL_INFO, "audio pumps=%lu partial=%lu errors=%lu last_write=%lu",
             s_stats.pumps, s_stats.partial_writes, s_stats.stream_errors,
             s_stats.last_write_size);
   }
-#else
-  s_stats.last_write_size = sizeof(s_buffer);
 #endif
+  if (s_pending_offset >= s_pending_size) {
+    s_pending_offset = 0;
+    s_pending_size = 0;
+  }
 }
 
 static bool prv_prepare_stream(void) {
@@ -341,14 +368,45 @@ static bool prv_prepare_stream(void) {
   return true;
 }
 
+static void prv_record_mix_stats(uint16_t nonzero, uint16_t peak) {
+  s_stats.generated_buffers++;
+  s_stats.last_nonzero_samples = nonzero;
+  s_stats.last_peak = peak;
+  s_stats.active_channels = (s_pulse1.enabled ? 1u : 0u) |
+                            (s_pulse2.enabled ? 2u : 0u) |
+                            (s_wave.enabled ? 4u : 0u) |
+                            (s_noise.enabled ? 8u : 0u);
+  s_stats.nr50 = s_regs[0x14];
+  s_stats.nr51 = s_regs[0x15];
+  s_stats.nr52 = s_regs[0x16];
+}
+
 void pb_audio_pump(void) {
   if (!prv_prepare_stream()) {
     return;
   }
 
-  for (uint16_t i = 0; i < AUDIO_PUMP_SAMPLES; i++) {
-    s_buffer[i] = prv_mix_sample();
+  if (s_pending_size) {
+    prv_write_buffer();
+    return;
   }
+
+  uint16_t nonzero = 0;
+  uint16_t peak = 0;
+  for (uint16_t i = 0; i < AUDIO_PUMP_SAMPLES; i++) {
+    int16_t sample = prv_mix_sample();
+    s_buffer[i] = sample;
+    int32_t magnitude = sample;
+    if (magnitude < 0) {
+      magnitude = -magnitude;
+    }
+    nonzero += magnitude != 0;
+    if (magnitude > peak) {
+      peak = (uint16_t)magnitude;
+    }
+  }
+  prv_record_mix_stats(nonzero, peak);
+  s_pending_size = sizeof(s_buffer);
   prv_write_buffer();
 }
 
@@ -357,7 +415,14 @@ void pb_audio_pump_silence(void) {
     return;
   }
 
+  if (s_pending_size) {
+    prv_write_buffer();
+    return;
+  }
+
   memset(s_buffer, 0, sizeof(s_buffer));
+  prv_record_mix_stats(0, 0);
+  s_pending_size = sizeof(s_buffer);
   prv_write_buffer();
 }
 
@@ -378,9 +443,9 @@ const PbAudioStats *pb_audio_stats(void) {
 }
 
 #ifdef PB_DESKTOP
-const int8_t *pb_audio_debug_buffer(size_t *size_out) {
-  if (size_out) {
-    *size_out = sizeof(s_buffer);
+const int16_t *pb_audio_debug_buffer(size_t *sample_count_out) {
+  if (sample_count_out) {
+    *sample_count_out = AUDIO_PUMP_SAMPLES;
   }
   return s_buffer;
 }
@@ -416,17 +481,45 @@ void audio_write(uint16_t addr, uint8_t val) {
   uint8_t idx = prv_idx(addr);
   if (idx == 0x16) {
     s_regs[idx] = val & 0x80;
-    if ((val & 0x80) == 0) {
+    s_master_enabled = (val & 0x80) != 0;
+    if (!s_master_enabled) {
       s_pulse1.enabled = false;
       s_pulse2.enabled = false;
       s_wave.enabled = false;
       s_noise.enabled = false;
+      s_dc_prev_input = 0;
+      s_dc_prev_output = 0;
     }
     return;
   }
 
   s_regs[idx] = val;
-  if (!prv_master_enabled() && idx < 0x20) {
+  switch (idx) {
+    case 0x14:
+      prv_update_mix_gains();
+      break;
+    case 0x15:
+      prv_update_mix_gains();
+      break;
+    case 0x03:
+    case 0x04:
+      s_pulse1.step = prv_pulse_step(0x03, 0x04);
+      break;
+    case 0x08:
+    case 0x09:
+      s_pulse2.step = prv_pulse_step(0x08, 0x09);
+      break;
+    case 0x0D:
+    case 0x0E:
+      s_wave.step = prv_wave_step();
+      break;
+    case 0x12:
+      s_noise.step = prv_noise_step();
+      break;
+    default:
+      break;
+  }
+  if (!s_master_enabled && idx < 0x20) {
     return;
   }
 

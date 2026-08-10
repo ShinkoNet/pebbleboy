@@ -12,8 +12,14 @@ from pathlib import Path
 
 
 APP_UUID = "53852c6a-202c-4a64-ae41-a7ed891bd8cf"
-DEFAULT_PERSIST_DIR = Path.home() / ".pebble-sdk" / "4.15.0-dirty-local" / "emery"
 DEFAULT_CHUNK_SIZE = 8192
+
+
+def default_persist_dir() -> Path:
+    sdk_root = Path.home() / ".pebble-sdk"
+    current = sdk_root / "SDKs" / "current"
+    version = current.resolve().name if current.exists() else "4.17"
+    return sdk_root / version / "emery"
 
 
 def storage_base(persist_dir: Path) -> Path:
@@ -55,7 +61,15 @@ def seed_cached_rom(db, rom_url: str, rom_file: Path, chunk_size: int) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("rom_url", nargs="?")
-    parser.add_argument("--persist-dir", type=Path, default=DEFAULT_PERSIST_DIR)
+    parser.add_argument("--name", default="Test ROM")
+    parser.add_argument(
+        "--extra-rom",
+        action="append",
+        default=[],
+        metavar="NAME=URL",
+        help="append another named URL to the launch library",
+    )
+    parser.add_argument("--persist-dir", type=Path, default=default_persist_dir())
     parser.add_argument("--rom-file", type=Path)
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
     parser.add_argument("--scale", choices=("1x", "fullscreen", "fit"), default="1x")
@@ -70,14 +84,33 @@ def main() -> int:
     try:
         for key in list(db.keys()):
             name = key.decode("utf-8", errors="replace") if isinstance(key, bytes) else str(key)
-            if name in ("romUrl", "romMeta", "audioEnabled", "scaleMode") or name.startswith("romChunk"):
+            if name in (
+                "romUrl",
+                "romLibrary",
+                "activeRomIndex",
+                "romMeta",
+                "audioEnabled",
+                "scaleMode",
+            ) or name.startswith("romChunk"):
                 del db[key]
         if args.clear:
             print("cleared phone ROM URL and cache")
             return 0
         if not args.rom_url:
             raise SystemExit("rom_url is required unless --clear is used")
-        db["romUrl"] = args.rom_url
+        library = [
+            {
+                "name": args.rom_file.stem if args.rom_file else args.name,
+                "url": args.rom_url,
+            }
+        ]
+        for entry in args.extra_rom:
+            name, separator, url = entry.partition("=")
+            if not separator or not name.strip() or not url.strip():
+                raise SystemExit("--extra-rom must use NAME=URL")
+            library.append({"name": name.strip(), "url": url.strip()})
+        db["romLibrary"] = json.dumps(library, separators=(",", ":"))
+        db["activeRomIndex"] = "0"
         db["audioEnabled"] = "1" if args.audio_enabled else "0"
         db["scaleMode"] = args.scale
         if args.rom_file:

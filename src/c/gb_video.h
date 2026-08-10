@@ -24,6 +24,7 @@ void pb_video_draw_line(const uint8_t *pixels, uint8_t y);
 uint8_t pb_video_get_pixel(uint8_t x, uint8_t y);
 const uint8_t *pb_video_framebuffer(void);
 uint32_t pb_video_hash(void);
+bool pb_video_take_changed(void);
 void pb_video_set_scale(PbVideoScale scale);
 PbVideoScale pb_video_scale(void);
 

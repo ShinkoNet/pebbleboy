@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sanity-check a Pebble/QEMU RGBA PNG screenshot."""
+"""Read PNGs and sanity-check Pebble/QEMU screenshots."""
 
 from __future__ import annotations
 
@@ -45,13 +45,21 @@ def read_png(path: Path) -> tuple[int, int, bytes]:
 
     if width is None or height is None:
         raise ValueError("missing IHDR")
-    if bit_depth != 8 or color_type != 6 or interlace != 0:
-        raise ValueError("expected 8-bit non-interlaced RGBA PNG")
+    if interlace != 0:
+        raise ValueError("interlaced PNGs are not supported")
+    if color_type in (2, 6) and bit_depth == 8:
+        channels = 3 if color_type == 2 else 4
+    elif color_type == 0 and bit_depth in (1, 2, 4, 8):
+        channels = 1
+    else:
+        raise ValueError(
+            f"unsupported PNG color type {color_type} at {bit_depth} bits"
+        )
 
     raw = zlib.decompress(bytes(idat))
-    bpp = 4
-    stride = width * bpp
-    out = bytearray(height * stride)
+    bpp = max(1, (channels * bit_depth + 7) // 8)
+    stride = (width * channels * bit_depth + 7) // 8
+    unpacked = bytearray(height * stride)
     src = 0
     prev = bytearray(stride)
     for y in range(height):
@@ -73,9 +81,28 @@ def read_png(path: Path) -> tuple[int, int, bytes]:
                 row[x] = (row[x] + paeth(left, up, up_left)) & 0xFF
             elif filter_type != 0:
                 raise ValueError(f"unsupported PNG filter {filter_type}")
-        out[y * stride:(y + 1) * stride] = row
+        unpacked[y * stride:(y + 1) * stride] = row
         prev = row
-    return width, height, bytes(out)
+
+    if color_type == 6:
+        return width, height, bytes(unpacked)
+
+    rgba = bytearray(width * height * 4)
+    for y in range(height):
+        row = unpacked[y * stride:(y + 1) * stride]
+        for x in range(width):
+            if color_type == 2:
+                r, g, b = row[x * 3:x * 3 + 3]
+            else:
+                bit = x * bit_depth
+                sample = (row[bit // 8] >> (8 - bit_depth - bit % 8)) & (
+                    (1 << bit_depth) - 1
+                )
+                value = sample * 255 // ((1 << bit_depth) - 1)
+                r = g = b = value
+            dst = (y * width + x) * 4
+            rgba[dst:dst + 4] = bytes((r, g, b, 255))
+    return width, height, bytes(rgba)
 
 
 def main() -> int:

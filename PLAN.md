@@ -233,11 +233,11 @@ Physical button input should clear any stuck touch direction.
 
 Use `speaker_stream_open()` with app-generated PCM.
 
-Initial format:
+Current format:
 
 ```text
-SpeakerPcmFormat_16kHz_8bit
-mono signed PCM
+SpeakerPcmFormat_16kHz_16bit
+mono signed PCM, generated once per emulated frame
 ```
 
 Mixer:

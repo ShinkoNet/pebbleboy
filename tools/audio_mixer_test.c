@@ -22,7 +22,7 @@ static void expect(bool condition, const char *message) {
 
 static AudioStats stats_for_buffer(void) {
   size_t size = 0;
-  const int8_t *buffer = pb_audio_debug_buffer(&size);
+  const int16_t *buffer = pb_audio_debug_buffer(&size);
   AudioStats stats = {
     .min = INT_MAX,
     .max = INT_MIN,
@@ -56,7 +56,7 @@ static void test_output_format(void) {
   size_t size = 0;
   (void)pb_audio_debug_buffer(&size);
   expect(pb_audio_debug_sample_rate() == 16000, "audio sample rate is not 16 kHz");
-  expect(size == 528, "audio pump is not one 33 ms 16 kHz block");
+  expect(size == 264, "audio pump is not one 16.5 ms 16 kHz block");
 }
 
 static void enable_master(uint8_t route_mask) {
@@ -85,7 +85,7 @@ static void test_pulse(void) {
   audio_write(0xFF12, 0xF0);
   audio_write(0xFF13, 0xD6);
   audio_write(0xFF14, 0x86);
-  expect_waveform("pulse", 80, 20);
+  expect_waveform("pulse", 7000, 8);
 }
 
 static void test_wave(void) {
@@ -97,7 +97,7 @@ static void test_wave(void) {
   audio_write(0xFF1C, 0x20);
   audio_write(0xFF1D, 0xD6);
   audio_write(0xFF1E, 0x86);
-  expect_waveform("wave", 24, 8);
+  expect_waveform("wave", 2000, 4);
 }
 
 static void test_noise(void) {
@@ -105,7 +105,7 @@ static void test_noise(void) {
   audio_write(0xFF21, 0xF0);
   audio_write(0xFF22, 0x03);
   audio_write(0xFF23, 0x80);
-  expect_waveform("noise", 80, 20);
+  expect_waveform("noise", 7000, 8);
 }
 
 static void test_master_mute(void) {
