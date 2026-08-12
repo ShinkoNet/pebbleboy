@@ -5,6 +5,7 @@ const vm = require('vm');
 const source = fs.readFileSync('src/pkjs/index.js', 'utf8');
 const prefix = source.split("Pebble.addEventListener('appmessage'")[0];
 const sent = [];
+const timers = [];
 const store = new Map([
   ['romUrl', 'http://example.invalid/install.gb'],
 ]);
@@ -29,8 +30,8 @@ const sandbox = {
     },
   },
   setTimeout(fn) {
-    fn();
-    return 1;
+    timers.push(fn);
+    return timers.length;
   },
   Pebble: {
     sendAppMessage(message, success) {
@@ -70,6 +71,25 @@ sandbox.romMeta = {
   cartType: 0,
   url: store.get('romUrl'),
 };
+
+const ensureRom = sandbox.ensureRom;
+const ensureCallbacks = [];
+sandbox.ensureRom = function(cb) {
+  ensureCallbacks.push(cb);
+};
+sandbox.sendInfo();
+sandbox.sendInfo();
+expect(ensureCallbacks.length === 1,
+       'concurrent ROM info requests should share one load');
+ensureCallbacks[0](null);
+expect(sent.length === 1 && sent[0].PB_CMD === sandbox.CMD.ROM_INFO,
+       'coalesced ROM info request did not send one response');
+sandbox.sendInfo();
+expect(sent.length === 1,
+       'ROM info retry was not suppressed during delivery grace period');
+expect(timers.length === 1, 'ROM info coalescing grace timer was not armed');
+sandbox.ensureRom = ensureRom;
+sent.length = 0;
 
 sandbox.sendInstallAtOffset(0);
 expect(sent.length === 1, 'first ACK should schedule exactly one chunk');

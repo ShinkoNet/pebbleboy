@@ -30,6 +30,7 @@ var SRAM_PAGE_SIZE = 4096;
 var MAX_ROM_SIZE = 8 * 1024 * 1024;
 var MAX_ROM_LIBRARY = 12;
 var MAX_SEND_RETRIES = 5;
+var ROM_INFO_COALESCE_MS = 5000;
 var CONFIG_URL = 'https://ptv.netcavy.net/gb/?v=2';
 var romBytes = null;
 var romMeta = null;
@@ -38,6 +39,8 @@ var appMessageBusy = false;
 var romLoading = false;
 var romLoadUrl = null;
 var romLoadCallbacks = [];
+var romInfoPending = false;
+var romInfoPendingUrl = null;
 var cacheSaveSerial = 0;
 var crc32Table = null;
 
@@ -619,8 +622,24 @@ function ensureRom(cb) {
 }
 
 function sendInfo() {
+  var requestedUrl = settings().romUrl;
+  if (romInfoPending && romInfoPendingUrl === requestedUrl) {
+    console.log('pebbleboy: coalesced duplicate ROM info request');
+    return;
+  }
+  romInfoPending = true;
+  romInfoPendingUrl = requestedUrl;
+
+  function clearPendingInfo() {
+    if (romInfoPendingUrl === requestedUrl) {
+      romInfoPending = false;
+      romInfoPendingUrl = null;
+    }
+  }
+
   ensureRom(function(err) {
     if (err) {
+      clearPendingInfo();
       sendError(err);
       return;
     }
@@ -634,7 +653,12 @@ function sendInfo() {
       PB_CRC32: romMeta.crc32,
       PB_AUDIO: cfg.audioEnabled ? 1 : 0,
       PB_SCALE: cfg.scaleMode === 'fullscreen' ? 1 : (cfg.scaleMode === 'fit' ? 2 : 0)
-    }, null, function() { console.log('pebbleboy: info send failed'); });
+    }, function() {
+      setTimeout(clearPendingInfo, ROM_INFO_COALESCE_MS);
+    }, function() {
+      clearPendingInfo();
+      console.log('pebbleboy: info send failed');
+    });
     console.log('pebbleboy: ROM info ' + romMeta.title + ' size=' + romMeta.size);
   });
 }

@@ -680,6 +680,18 @@ static PB_SIZE_OPT void prv_phone_event(const PbPhoneEvent *event, void *context
               event->title[0] ? event->title : "ROM", (unsigned long)event->size,
               (unsigned)event->cart_type, (unsigned long)event->crc32,
               (unsigned)event->video_scale);
+      if (s_rom_install.active) {
+        if (s_rom_install.size == event->size &&
+            s_rom_install.crc32 == event->crc32) {
+          APP_LOG(APP_LOG_LEVEL_INFO,
+                  "ignoring duplicate ROM info during install at %lu/%lu",
+                  (unsigned long)s_rom_install.offset,
+                  (unsigned long)s_rom_install.size);
+        } else {
+          prv_install_fail("ROM changed during install");
+        }
+        break;
+      }
       prv_apply_phone_settings(event);
       if (prv_start_matching_blob(event->size, event->crc32)) {
         APP_LOG(APP_LOG_LEVEL_INFO, "configured ROM already installed");
