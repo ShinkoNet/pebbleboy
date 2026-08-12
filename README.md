@@ -1,65 +1,63 @@
 # Pebbleboy
 
 Pebbleboy is a Game Boy and Game Boy Color emulator for Pebble Time 2 and
-Pebble 2 Duo. They are the only Pebble models with the 128 KiB app limit needed
-by the emulator. It uses Peanut-GB for the CPU and LCD core and can use a native
-16 kHz/16-bit PCM mixer on speaker-equipped watches.
+Pebble 2 Duo. It uses Peanut-GB for the CPU and LCD core and can use a native
+16 kHz/16-bit PCM mixer on speaker-equipped watches. The emulator uses 128 KiB
+app limit, so it can't be installed on older Pebbles.
 
 Pebbleboy does not contain or distribute commercial Game Boy ROMs. You must
 provide ROM images that you are legally entitled to use.
 
 ## Release types
 
-Pebbleboy is being developed around two complementary release types:
+Pebbleboy is currently being developed around two complementary release types:
 
-| Release | ROM delivery | Phone needed while playing | Firmware | Audio |
+| Release | ROM delivery | Firmware | Audio |
 | --- | --- | --- | --- | --- |
-| Universal CFW build | Configure a URL; the phone downloads the selected ROM once and installs it into watch flash | No, after installation | ShinkoNet CFW | Optional |
-| Per-ROM stock build | A Linux build script embeds a ROM supplied from the user's own filesystem into a personal PBW | No | Stock-compatible target | Omitted by default |
+| CFW build (Loader/ROM chooser) | Configure a URL; the phone downloads the selected ROM once and installs it into watch flash | Sideloaded Firmware | Yes |
+| Stock build (Preloaded ROM) | Run the build script yourself to supply your ROM to build a personal .PBW with the game inside | Stock-compatible target | No |
 
-The universal build needs CFW because its app-scoped 8 MB ROM store is a new
-firmware API. The emulator and cartridge cache fit the standard 128 KiB app
-limit; the stock target can use an immutable PBW resource and avoid the blob
-API entirely. That RAM requirement limits both release types to Pebble Time 2
-and Pebble 2 Duo.
+The universal build needs CFW because it needs code inside Pebble OS to overwrite
+its own app storage in an area where Pebbleboy has pre-allocated it, as part of the
+app install size. The stock build can simply read from the built PBW resource after
+the game has been packaged to it and avoid the blob API that CFW uses entirely. 
 
-Audio is not a stock-release requirement. Only Pebble Time 2 and Pebble 2 Duo
-have speakers, while the latter has a monochrome display and is not a Game Boy
-Color target. Speaker and scheduler improvements can remain a CFW feature
-unless equivalent support lands upstream.
-
-The per-ROM stock builder and polished release artifacts are still planned;
-the current development build should be treated as the CFW target.
+About audio: Only Pebble Time 2 and Pebble 2 Duo have speakers. The CFW has fixes
+to the audio that I could probably submit PRs upstream for (I'm less confident
+they'll accept the functionality for an app to have its own writable blob
+filesystem API tho). These Speaker and scheduler improvements are CFW features 
+unless equivalent support lands upstream. Since audio is pretty much dependent on
+these fixes, audio only works under my sideloaded firmware.
 
 ## Install and configure
 
-The normal `Pebbleboy.pbw` is the ROM-free CFW build and can be shared without
-rebuilding it. CloudPebble can build it with the official toolchain: Pebbleboy
-selects narrow veneers for the CFW-only app-blob calls directly in its C
-sources because CloudPebble replaces the repository's custom `wscript`.
+The file `Pebbleboy.pbw` in releases is the ROM-free CFW build and can be shared.
+**YOU WILL NEED TO SIDELOAD THE FIRMWARE TO RUN IT**
 
-Tagged PBWs and local builds also mark the PBW with the matching CFW SDK
-revision, so stock firmware rejects them. CloudPebble's generated build rules
-cannot apply that metadata stamp; treat its output as CFW-only even if stock
-firmware allows it to install.
+If you don't want to deal with flashing via Core Device's app for whatever reason,
+including just not trusting unofficial builds (good on you btw, you're sane) then
+you can package ROMs without audio support by building it yourself for stock.
+This also will perform worse as you can't cache as many banks as the CFW build can.
+It'll be constantly reading from the pebble's flash in the overworld in pokecrystal.
 
-1. Install the CFW PBW and connect the watch to its companion phone.
+CloudPebble instances will only build the loader under CFW build flags, not stock!
+
+Anyway...
+
+1. Sideload the firmware and connect the watch to its companion phone.
 2. Open Pebbleboy's settings in the Pebble mobile app.
-3. Add one or more game names and direct-download ROM URLs.
+3. Add one or more game names and direct-download ROM URLs (or base64 text URLs).
 4. Choose display scaling and whether speaker audio is enabled, then save.
 5. Launch Pebbleboy and choose a game with **Up/Down** and **Select**. The phone
    transfers it once; subsequent launches read it directly from watch flash.
 
-Each URL must return either:
+Each URL must return either a binary `.gb` file or plain base64. Indirect downloads
+from random ROM website's won't work. I won't tell you where to find ROMs that
+are hosted in this way, unfortunately...
 
-- a binary `.gb` file;
-- plain base64; or
-- base64 preceded by a line containing `PEBBLEBOY_ROM_BASE64`.
-
-The host must allow the Pebble phone JavaScript to fetch the URL. HTTPS and an
-`Access-Control-Allow-Origin: *` response header are recommended. Avoid putting
-long-lived secrets in a URL: configuration and cache data are phone-local but
-are not an encrypted credential store.
+If hosting a distribution URL yourself for your homebrew roms for example, the 
+host must allow the Pebble phone JavaScript to fetch the URL. HTTPS and an
+`Access-Control-Allow-Origin: *` response header are recommended.
 
 The settings editor is hosted at `https://ptv.netcavy.net/gb/`. Existing ROM
 names and URLs are passed to it in the URL fragment, which browsers do not send
@@ -68,38 +66,45 @@ to the web server. The static source for the page is in `config/index.html`.
 The library supports up to 12 entries. One selected ROM is installed on the
 watch at a time. The phone may also cache the active download. Save RAM belongs
 to the locally installed cartridge, so gameplay and saving do not depend on a
-Bluetooth connection.
+Bluetooth connection. I plan to code a feature for you to archive your SRAM if 
+you change roms, right now it just overwrites a single slot...
+
+**So for now, expect your save to no longer function after you change the rom!!**
+
+## For nerds
 
 ## Where large ROMs live
 
-In the universal CFW build, the phone fetches the selected 32 KB–8 MB cartridge
-and transfers it in checked AppMessage chunks. CFW stores it in a filesystem
-blob owned by Pebbleboy's UUID. The blob is committed only after its size and
-CRC32 verify, so an interrupted transfer is never mistaken for a usable ROM.
+In the CFW build, the phone fetches the selected 32 KB–8 MB cartridge
+and transfers it in checked AppMessage chunks. I'm so sorry. CFW then stores it 
+in a filesystem blob owned by Pebbleboy's UUID. This is a CFW-unique app-blob API 
+to persist and read up to 8 MB from watch flash. The blob is committed only 
+after its size and CRC32 verify so the transfer knows it got everything.
 The emulator then reads cartridge banks locally from flash through its RAM
-cache. Installing another game replaces the previous ROM but does not require a
-new PBW.
+cache. Installing another game replaces the previous ROM and SRAM but does not 
+require a new PBW.
 
 In a per-ROM stock build, the cartridge is packaged as a PBW resource instead.
-That PBW is personal to the supplied ROM and has no runtime downloader.
+That PBW is personal to the supplied ROM and has no runtime downloader. It
+still reads the ROM and SRAM from flash.
 
 ## Firmware and audio
 
-The universal build uses ordinary AppMessage for transfer, plus a CFW-only
-app-blob API to persist and read up to 8 MB from watch flash. Its CPU load
-exposes speaker refill starvation in the stock scheduler.
-
 Prebuilt DVT and PVT firmware containing the app-blob API and speaker
-scheduling/DMA fixes is published from the
-[ShinkoNet PebbleOS fork](https://github.com/ShinkoNet/PebbleOS/releases). The
+scheduling/DMA fixes is published from my
+[PebbleOS fork](https://github.com/ShinkoNet/PebbleOS/releases). The
 [firmware notes](https://github.com/ShinkoNet/PebbleOS/blob/main/PEBBLEBOY_FIRMWARE.md)
 explain hardware selection, sideload precautions, source patches, and the
 automatic upstream-sync process. Each release contains a merged PBZ with both
-firmware slots; users do not need to compile PebbleOS themselves.
+firmware slots done by github actions for each upstream release, but feel free
+to compile it yourself if you want to feel extra safe after reading the code
+yourself :)
+I accept no liabilities if my app rewrites something it wasn't supposed to when
+loading your ROM into it.
 
 The current Time 2 speaker API accepts Pebbleboy's mono signed 16 kHz/16-bit
-PCM format. Disabling audio reduces CPU load; no larger app-memory allocation
-is required.
+PCM format. Disabling audio reduces CPU load so it might improve performance,
+but most issues are just a bottleneck from the flash or screen scaling.
 
 ## Controls
 
@@ -113,26 +118,19 @@ During a game:
 | Back click | Select |
 | Touchscreen direction | D-pad |
 
-To toggle best-effort 2× fast-forward, press the Game Boy Start+Select chord
-twice within one second (hold the watch's Up button and double-click Back).
-Fast-forward renders at up to 30 FPS and pauses audio until normal speed is
-restored.
+To toggle best-effort 2× fast-forward, press the Game Boy Start+Select twice 
+within one second (hold the watch's Up button and double-click Back).
+Fast-forward pauses audio until normal speed is restored.
 
 ## Build
 
-With the Pebble SDK active, a normal SDK build remains useful for development:
+You need the latest Pebble SDK, here's how to build this as well as package ROMs:
 
 ```sh
 pebble build
 ```
 
-That produces the universal CFW target. A local build may instead point at an
-SDK generated from the matching firmware, which avoids the bundled
-official-toolchain veneers:
-
-```sh
-PEBBLEBOY_CFW_SDK=/path/to/generated-sdk/emery pebble build
-```
+That produces the universal CFW target. 
 
 For the stock-compatible path, a ROM can be embedded at
 `resources/data/cartridge.gb`:
@@ -141,21 +139,8 @@ For the stock-compatible path, a ROM can be embedded at
 PEBBLEBOY_EMBED_ROM=1 pebble build
 ```
 
-Embedded ROMs must never be committed or distributed unless their licence
-explicitly permits it.
-
-## Tests
-
-The desktop suite covers the cartridge cache, phone protocol helpers, SRAM,
-audio mixer, Tetris, Pokémon Red when locally available, and public CPU/LCD
-compatibility ROMs:
-
-```sh
-bash tools/run_tests.sh
-bash tools/run_compat_tests.sh
-```
-
-Test ROMs are local, gitignored inputs. They are not part of the PBW.
+Please ensure you are allowed to distribute the ROM you bundle with Pebbleboy
+if you plan to share your own release.
 
 ## Credits
 
