@@ -6,7 +6,7 @@
 #include <stdint.h>
 
 #ifndef PB_DESKTOP
-#include <pebble.h>
+#include "gb_blob.h"
 #endif
 
 #define PB_CART_BANK_SIZE 0x4000u

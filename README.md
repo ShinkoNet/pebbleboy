@@ -35,8 +35,13 @@ the current development build should be treated as the CFW target.
 
 The normal `Pebbleboy.pbw` is the ROM-free CFW build and can be shared without
 rebuilding it. CloudPebble can build it with the official toolchain: Pebbleboy
-includes narrow veneers for the CFW-only app-blob calls and marks the PBW with
-the matching SDK revision. Stock firmware will reject that PBW.
+selects narrow veneers for the CFW-only app-blob calls directly in its C
+sources because CloudPebble replaces the repository's custom `wscript`.
+
+Tagged PBWs and local builds also mark the PBW with the matching CFW SDK
+revision, so stock firmware rejects them. CloudPebble's generated build rules
+cannot apply that metadata stamp; treat its output as CFW-only even if stock
+firmware allows it to install.
 
 1. Install the CFW PBW and connect the watch to its companion phone.
 2. Open Pebbleboy's settings in the Pebble mobile app.

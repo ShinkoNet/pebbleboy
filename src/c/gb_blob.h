@@ -3,6 +3,27 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifndef PB_DESKTOP
+#include <pebble.h>
+
+/* CloudPebble builds projects with its own stock wscript, so build-time
+ * defines from this repository are not available there.  ROM-free builds are
+ * the normal Pebbleboy target: select the blob path in source and synthesize
+ * the seven CFW veneers when the SDK does not already declare that API.
+ *
+ * The per-ROM stock builder explicitly defines PEBBLEBOY_EMBEDDED_ROM_BUILD
+ * and uses an ordinary immutable resource instead. */
+#ifndef PEBBLEBOY_EMBEDDED_ROM_BUILD
+#ifndef PEBBLEBOY_APP_BLOB
+#define PEBBLEBOY_APP_BLOB 1
+#endif
+#if !defined(_PBL_API_EXISTS_app_blob_get_info) && \
+    !defined(PEBBLEBOY_CFW_OFFICIAL_SDK_BRIDGE)
+#define PEBBLEBOY_CFW_OFFICIAL_SDK_BRIDGE 1
+#endif
+#endif
+#endif
+
 #ifdef PEBBLEBOY_CFW_OFFICIAL_SDK_BRIDGE
 typedef struct {
   uint32_t size;
