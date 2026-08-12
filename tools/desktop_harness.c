@@ -36,8 +36,11 @@ static void gb_error(struct gb_s *gb, const enum gb_error_e error, const uint16_
 }
 
 static void lcd_line(struct gb_s *gb, const uint8_t *pixels, const uint_fast8_t line) {
-  (void)gb;
-  pb_video_draw_line(pixels, (uint8_t)line);
+  if (gb->cgb.cgbMode) {
+    pb_video_draw_line_cgb(pixels, gb->cgb.fixPalette, (uint8_t)line);
+  } else {
+    pb_video_draw_line(pixels, (uint8_t)line);
+  }
 }
 
 static void serial_tx(struct gb_s *gb, const uint8_t value) {
@@ -150,10 +153,10 @@ static bool write_bmp(const char *path) {
 
   for (int y = PB_GB_LCD_H - 1; y >= 0; y--) {
     for (uint8_t x = 0; x < PB_GB_LCD_W; x++) {
-      uint8_t pixel = (uint8_t)(255 - pb_video_get_pixel(x, (uint8_t)y) * 85);
-      fputc(pixel, f);
-      fputc(pixel, f);
-      fputc(pixel, f);
+      uint8_t pixel = pb_video_get_pixel(x, (uint8_t)y);
+      fputc((pixel & 3u) * 85u, f);
+      fputc(((pixel >> 2) & 3u) * 85u, f);
+      fputc(((pixel >> 4) & 3u) * 85u, f);
     }
   }
   fclose(f);
@@ -176,7 +179,11 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  pb_video_init();
+  if (!pb_video_init()) {
+    fprintf(stderr, "video allocation failed\n");
+    free(rom);
+    return 1;
+  }
   if (!pb_cart_init_memory(&s_cart, rom, (uint32_t)rom_size)) {
     fprintf(stderr, "cart init failed: %s\n", s_cart.error);
     free(rom);
@@ -231,15 +238,30 @@ int main(int argc, char **argv) {
       save_nonff++;
     }
   }
-  printf("rom=%s title=\"%s\" frames=%d mbc=%d banks=%u save=%zu save0=%02x save_nonff=%zu hash=%08x hits=%u misses=%u loads=%u source_reads=%u source_bytes=%u load_banks=%s request_banks=%s\n",
-         argv[1], title, frames, (int)s_gb.mbc, (unsigned)s_cart.bank_count,
-         s_save_ram_size, save0, save_nonff, pb_video_hash(),
+  uint64_t colour_mask = 0;
+  for (uint8_t y = 0; y < PB_GB_LCD_H; y++) {
+    for (uint8_t x = 0; x < PB_GB_LCD_W; x++) {
+      colour_mask |= ((uint64_t)1) << pb_video_get_pixel(x, y);
+    }
+  }
+  unsigned colour_count = 0;
+  for (uint8_t colour = 0; colour < 64; colour++) {
+    colour_count += (unsigned)((colour_mask >> colour) & 1u);
+  }
+  printf("rom=%s title=\"%s\" frames=%d cgb=%u mbc=%d banks=%u save=%zu save0=%02x save_nonff=%zu hash=%08x colors=%u hits=%u misses=%u loads=%u source_reads=%u source_bytes=%u load_banks=%s request_banks=%s\n",
+         argv[1], title, frames, (unsigned)s_gb.cgb.cgbMode, (int)s_gb.mbc,
+         (unsigned)s_cart.bank_count, s_save_ram_size, save0, save_nonff,
+         pb_video_hash(), colour_count,
          (unsigned)stats->hits, (unsigned)stats->misses, (unsigned)stats->loads,
          (unsigned)stats->source_reads, (unsigned)stats->source_bytes,
          load_banks, request_banks);
   printf("cpu pc=%04x af=%04x bc=%04x de=%04x hl=%04x sp=%04x\n",
          s_gb.cpu_reg.pc.reg,
-         (unsigned)((uint16_t)s_gb.cpu_reg.a << 8 | s_gb.cpu_reg.f.reg),
+         (unsigned)((uint16_t)s_gb.cpu_reg.a << 8 |
+                    ((uint16_t)s_gb.cpu_reg.f_bits.z << 7) |
+                    ((uint16_t)s_gb.cpu_reg.f_bits.n << 6) |
+                    ((uint16_t)s_gb.cpu_reg.f_bits.h << 5) |
+                    ((uint16_t)s_gb.cpu_reg.f_bits.c << 4)),
          s_gb.cpu_reg.bc.reg, s_gb.cpu_reg.de.reg, s_gb.cpu_reg.hl.reg,
          s_gb.cpu_reg.sp.reg);
   if (s_serial_size) {
@@ -247,6 +269,7 @@ int main(int argc, char **argv) {
   }
 
   free(s_save_ram);
+  pb_video_deinit();
   free(rom);
   return 0;
 }

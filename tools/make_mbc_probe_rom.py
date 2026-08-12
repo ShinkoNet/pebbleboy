@@ -126,6 +126,37 @@ def build_ram_bank_program(mbc: int) -> bytes:
     return bytes(program)
 
 
+def build_rtc_program() -> bytes:
+    program = bytearray()
+    program.extend([0x31, 0xF0, 0xDF])  # ld sp,$dff0
+    emit_write_a_to_addr(program, 0x0A, 0x0000)  # enable RAM and RTC
+    emit_write_a_to_addr(program, 0x08, 0x4000)  # select RTC seconds
+    emit_write_a_to_addr(program, 10, 0xA000)
+
+    emit_write_a_to_addr(program, 0, 0x6000)
+    emit_write_a_to_addr(program, 1, 0x6000)  # latch seconds=10
+    emit_write_a_to_addr(program, 20, 0xA000)  # live clock changes only
+
+    jp_placeholders: list[int] = []
+    emit_ld_a_abs(program, 0xA000)
+    emit_compare_a_to_value(program, 10, jp_placeholders)
+
+    emit_write_a_to_addr(program, 0, 0x6000)
+    emit_write_a_to_addr(program, 1, 0x6000)  # re-latch seconds=20
+    emit_ld_a_abs(program, 0xA000)
+    emit_compare_a_to_value(program, 20, jp_placeholders)
+
+    emit_write_a_to_addr(program, 0, 0x0000)  # disabled RTC reads as FF
+    emit_ld_a_abs(program, 0xA000)
+    emit_compare_a_to_value(program, 0xFF, jp_placeholders)
+
+    emit_write_a_to_addr(program, 0x0A, 0x0000)
+    emit_write_a_to_addr(program, 0, 0x4000)  # select SRAM bank zero
+    emit_write_a_to_addr(program, SUCCESS_VALUE, 0xA000)
+    emit_finish(program, jp_placeholders)
+    return bytes(program)
+
+
 def emit_finish(program: bytearray, jp_placeholders: list[int]) -> None:
     program.extend([0x18, 0xFE])  # jr $
     fail_addr = START_ADDR + len(program)
@@ -145,7 +176,11 @@ def build_rom(kind: str, probe: str, bank_count: int = 4) -> bytes:
 
     rom[0x0100:0x0104] = bytes([0x00, 0xC3, 0x50, 0x01])
     rom[0x0104:0x0134] = NINTENDO_LOGO
-    if probe == "ram":
+    if probe == "rtc":
+        if kind != "mbc3":
+            raise ValueError("RTC probe requires MBC3")
+        title = b"MBC3 RTC"
+    elif probe == "ram":
         title = config["title"].replace(b"PROBE", b"RAM")
     elif bank_count > 4:
         title = f"MBC{config['mbc']} ALLBANK".encode("ascii")
@@ -153,12 +188,14 @@ def build_rom(kind: str, probe: str, bank_count: int = 4) -> bytes:
         title = config["title"]
     rom[0x0134:0x0134 + len(title)] = title
     rom[0x0143] = 0x00  # DMG only.
-    rom[0x0147] = config["cart_type"]
+    rom[0x0147] = 0x10 if probe == "rtc" else config["cart_type"]
     rom[0x0148] = ROM_SIZE_CODES[bank_count]
     rom[0x0149] = 0x02 if probe == "rom" else 0x03  # 8 KiB or 32 KiB RAM.
 
     if probe == "rom":
         program = build_rom_bank_program(config["mbc"], bank_count)
+    elif probe == "rtc":
+        program = build_rtc_program()
     else:
         program = build_ram_bank_program(config["mbc"])
     rom[START_ADDR:START_ADDR + len(program)] = program
@@ -174,7 +211,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("output", type=Path)
     parser.add_argument("--mbc", choices=tuple(MBC_CONFIG), required=True)
-    parser.add_argument("--probe", choices=("rom", "ram"), default="rom")
+    parser.add_argument("--probe", choices=("rom", "ram", "rtc"), default="rom")
     parser.add_argument("--banks", type=int, choices=tuple(ROM_SIZE_CODES), default=4)
     args = parser.parse_args()
 

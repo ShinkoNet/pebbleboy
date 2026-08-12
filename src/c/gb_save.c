@@ -31,34 +31,41 @@ uint32_t pb_save_chunk_key(const PbSave *save, uint16_t chunk) {
   return save->key_base | chunk;
 }
 
-bool pb_save_init(PbSave *save, uint8_t *data, size_t size, uint16_t rom_checksum,
-                  PbSaveReadCb read_cb, PbSaveWriteCb write_cb, void *store_context) {
-  if (!save || !data || size == 0 || size > PB_SAVE_MAX_SIZE) {
+bool pb_save_select_window(PbSave *save, size_t addr) {
+  if (!save || !save->data || addr >= save->size || !save->data_size) {
     return false;
   }
 
-  memset(save, 0, sizeof(*save));
-  memset(data, 0xFF, size);
-  save->data = data;
-  save->size = size;
-  save->key_base = PB_SAVE_KEY_PREFIX | ((uint32_t)rom_checksum << 8);
-  save->read_cb = read_cb;
-  save->write_cb = write_cb;
-  save->store_context = store_context;
+  size_t start = (addr / save->data_size) * save->data_size;
+  if (save->window_start == start) {
+    return true;
+  }
+  if (save->window_start != SIZE_MAX && pb_save_flush_all(save) < 0) {
+    return false;
+  }
 
-  if (!read_cb) {
+  memset(save->data, 0xFF, save->data_size);
+  save->window_start = start;
+  if (!save->read_cb) {
     return true;
   }
 
   uint8_t stored[PB_SAVE_CHUNK_SIZE];
-  uint16_t chunks = prv_chunk_count(save);
-  for (uint16_t chunk = 0; chunk < chunks; chunk++) {
+  uint16_t first_chunk = (uint16_t)(start / PB_SAVE_CHUNK_SIZE);
+  size_t end = start + save->data_size;
+  if (end > save->size) {
+    end = save->size;
+  }
+  uint16_t end_chunk = (uint16_t)((end + PB_SAVE_CHUNK_SIZE - 1u) /
+                                  PB_SAVE_CHUNK_SIZE);
+  for (uint16_t chunk = first_chunk; chunk < end_chunk; chunk++) {
     size_t size_to_read = prv_chunk_size(save, chunk);
     save->read_ops++;
-    int result = read_cb(pb_save_chunk_key(save, chunk), stored, size_to_read,
-                         store_context);
+    int result = save->read_cb(pb_save_chunk_key(save, chunk), stored, size_to_read,
+                               save->store_context);
     if (result == (int)size_to_read) {
-      memcpy(data + (size_t)chunk * PB_SAVE_CHUNK_SIZE, stored, size_to_read);
+      memcpy(save->data + (size_t)chunk * PB_SAVE_CHUNK_SIZE - start,
+             stored, size_to_read);
       save->restored_chunks++;
       save->read_bytes += size_to_read;
     }
@@ -66,18 +73,48 @@ bool pb_save_init(PbSave *save, uint8_t *data, size_t size, uint16_t rom_checksu
   return true;
 }
 
+bool pb_save_init_window(PbSave *save, uint8_t *data, size_t size, size_t data_size,
+                         uint16_t rom_checksum, PbSaveReadCb read_cb,
+                         PbSaveWriteCb write_cb, void *store_context) {
+  if (!save || !data || size == 0 || size > PB_SAVE_MAX_SIZE ||
+      data_size == 0 || data_size > size || data_size % PB_SAVE_CHUNK_SIZE) {
+    return false;
+  }
+
+  memset(save, 0, sizeof(*save));
+  save->data = data;
+  save->size = size;
+  save->data_size = data_size;
+  save->window_start = SIZE_MAX;
+  save->key_base = PB_SAVE_KEY_PREFIX | ((uint32_t)rom_checksum << 8);
+  save->read_cb = read_cb;
+  save->write_cb = write_cb;
+  save->store_context = store_context;
+
+  return pb_save_select_window(save, 0);
+}
+
+bool pb_save_init(PbSave *save, uint8_t *data, size_t size, uint16_t rom_checksum,
+                  PbSaveReadCb read_cb, PbSaveWriteCb write_cb, void *store_context) {
+  return pb_save_init_window(save, data, size, size, rom_checksum,
+                             read_cb, write_cb, store_context);
+}
+
 uint8_t pb_save_read(const PbSave *save, size_t addr) {
-  if (!save || !save->data || addr >= save->size) {
+  if (!save || !save->data || addr >= save->size ||
+      addr < save->window_start || addr - save->window_start >= save->data_size) {
     return 0xFF;
   }
-  return save->data[addr];
+  return save->data[addr - save->window_start];
 }
 
 bool pb_save_write(PbSave *save, size_t addr, uint8_t value) {
-  if (!save || !save->data || addr >= save->size || save->data[addr] == value) {
+  if (!save || !save->data || addr >= save->size || addr < save->window_start ||
+      addr - save->window_start >= save->data_size ||
+      save->data[addr - save->window_start] == value) {
     return false;
   }
-  save->data[addr] = value;
+  save->data[addr - save->window_start] = value;
   prv_set_chunk_dirty(save, (uint16_t)(addr / PB_SAVE_CHUNK_SIZE), true);
   return true;
 }
@@ -107,7 +144,12 @@ int pb_save_flush_one(PbSave *save) {
       continue;
     }
     size_t size_to_write = prv_chunk_size(save, chunk);
-    const uint8_t *data = save->data + (size_t)chunk * PB_SAVE_CHUNK_SIZE;
+    size_t chunk_start = (size_t)chunk * PB_SAVE_CHUNK_SIZE;
+    if (chunk_start < save->window_start ||
+        chunk_start - save->window_start >= save->data_size) {
+      return -1;
+    }
+    const uint8_t *data = save->data + chunk_start - save->window_start;
     save->write_ops++;
     int result = save->write_cb(pb_save_chunk_key(save, chunk), data, size_to_write,
                                 save->store_context);

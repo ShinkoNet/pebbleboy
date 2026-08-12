@@ -101,6 +101,24 @@ int main(void) {
          "restored values did not match");
   expect(pb_save_dirty_count(&loaded) == 0, "restored save started dirty");
 
+  uint8_t window_data[4096];
+  PbSave windowed;
+  expect(pb_save_init_window(&windowed, window_data, PB_SAVE_MAX_SIZE,
+                             sizeof(window_data), 0x9ABC, mock_read,
+                             mock_write, &store),
+         "windowed initialization failed");
+  expect(pb_save_write(&windowed, 7, 0x71), "first window write failed");
+  expect(pb_save_select_window(&windowed, 5000), "window switch failed");
+  expect(pb_save_dirty_count(&windowed) == 0,
+         "window switch did not flush previous data");
+  expect(pb_save_write(&windowed, 5000, 0x72), "second window write failed");
+  expect(pb_save_select_window(&windowed, 7), "window restore switch failed");
+  expect(pb_save_read(&windowed, 7) == 0x71,
+         "first window did not restore its persisted value");
+  expect(pb_save_select_window(&windowed, 5000), "second restore switch failed");
+  expect(pb_save_read(&windowed, 5000) == 0x72,
+         "second window did not restore its persisted value");
+
   uint8_t other_data[PB_SAVE_MAX_SIZE];
   PbSave other;
   expect(pb_save_init(&other, other_data, sizeof(other_data), 0x5678, mock_read,

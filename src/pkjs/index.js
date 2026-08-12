@@ -13,7 +13,11 @@ var CMD = {
   ROM_LIST_BEGIN: 31,
   ROM_LIST_ITEM: 32,
   ROM_LIST_END: 33,
-  ROM_SELECT: 34
+  ROM_SELECT: 34,
+  ROM_INSTALL_DATA: 40,
+  ROM_INSTALL_ACK: 41,
+  ROM_INSTALL_END: 42,
+  ROM_INSTALL_DONE: 43
 };
 
 var BANK_SIZE = 16 * 1024;
@@ -23,7 +27,7 @@ var CACHE_SAVE_INITIAL_DELAY_MS = 5000;
 var CACHE_SAVE_IDLE_DELAY_MS = 250;
 var CACHE_SAVE_CHUNK_DELAY_MS = 25;
 var SRAM_PAGE_SIZE = 4096;
-var MAX_ROM_SIZE = 4 * 1024 * 1024;
+var MAX_ROM_SIZE = 8 * 1024 * 1024;
 var MAX_ROM_LIBRARY = 12;
 var MAX_SEND_RETRIES = 5;
 var CONFIG_URL = 'https://ptv.netcavy.net/gb/?v=2';
@@ -35,6 +39,7 @@ var romLoading = false;
 var romLoadUrl = null;
 var romLoadCallbacks = [];
 var cacheSaveSerial = 0;
+var crc32Table = null;
 
 function normalizeRomLibrary(value) {
   var out = [];
@@ -175,6 +180,24 @@ function base64ToBytes(text) {
   return out;
 }
 
+function crc32(bytes) {
+  if (!crc32Table) {
+    crc32Table = [];
+    for (var i = 0; i < 256; i++) {
+      var value = i;
+      for (var bit = 0; bit < 8; bit++) {
+        value = (value & 1) ? (0xEDB88320 ^ (value >>> 1)) : (value >>> 1);
+      }
+      crc32Table[i] = value >>> 0;
+    }
+  }
+  var crc = 0xFFFFFFFF;
+  for (var pos = 0; pos < bytes.length; pos++) {
+    crc = crc32Table[(crc ^ bytes[pos]) & 0xFF] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
 function titleOf(bytes) {
   var title = '';
   for (var i = 0x134; i <= 0x143 && i < bytes.length; i++) {
@@ -254,10 +277,27 @@ function loadCached(url) {
     var pos = 0;
     for (var i = 0; i < meta.chunks; i++) {
       var part = base64ToBytes(localStorage.getItem('romChunk' + i) || '');
+      var expected = Math.min(CACHE_CHUNK, meta.size - pos);
+      if (part.length !== expected) {
+        return false;
+      }
       out.set(part, pos);
       pos += part.length;
     }
+    if (pos !== meta.size) {
+      return false;
+    }
     romBytes = out;
+    var actualCrc32 = crc32(out);
+    if (typeof meta.crc32 === 'number' &&
+        (meta.crc32 >>> 0) !== actualCrc32) {
+      romBytes = null;
+      return false;
+    }
+    if (typeof meta.crc32 !== 'number') {
+      meta.crc32 = actualCrc32;
+      localStorage.setItem('romMeta', JSON.stringify(meta));
+    }
     romMeta = meta;
     return true;
   } catch (err) {
@@ -273,6 +313,7 @@ function saveCached(url, bytes, meta) {
   var cacheMeta = {
     size: meta.size,
     sha1: meta.sha1,
+    crc32: meta.crc32,
     title: meta.title,
     cartType: meta.cartType,
     url: url,
@@ -465,13 +506,14 @@ function finishFetchRom(url, bytes, cb) {
     return;
   }
   if (bytes.length > MAX_ROM_SIZE) {
-    cb('ROM exceeds 4 MB');
+    cb('ROM exceeds 8 MB');
     return;
   }
   console.log('pebbleboy: fetched ' + bytes.length + ' bytes');
   var meta = {
     size: bytes.length,
     sha1: sha1(bytes),
+    crc32: crc32(bytes),
     title: titleOf(bytes),
     cartType: bytes[0x147],
     url: url
@@ -589,10 +631,40 @@ function sendInfo() {
       PB_TITLE: romMeta.title,
       PB_CART_TYPE: romMeta.cartType,
       PB_SHA1: romMeta.sha1,
+      PB_CRC32: romMeta.crc32,
       PB_AUDIO: cfg.audioEnabled ? 1 : 0,
       PB_SCALE: cfg.scaleMode === 'fullscreen' ? 1 : (cfg.scaleMode === 'fit' ? 2 : 0)
     }, null, function() { console.log('pebbleboy: info send failed'); });
     console.log('pebbleboy: ROM info ' + romMeta.title + ' size=' + romMeta.size);
+  });
+}
+
+function sendInstallAtOffset(offset) {
+  ensureRom(function(err) {
+    if (err) {
+      sendError(err);
+      return;
+    }
+    offset = Number(offset);
+    if (offset !== Math.floor(offset) || offset < 0 ||
+        offset > romBytes.length || offset % MSG_CHUNK !== 0) {
+      sendError('invalid install offset');
+      return;
+    }
+    if (offset === romBytes.length) {
+      console.log('pebbleboy: install payload sent, awaiting verification');
+      sendQueue([{
+        PB_CMD: CMD.ROM_INSTALL_END,
+        PB_CRC32: romMeta.crc32
+      }]);
+      return;
+    }
+    var end = Math.min(offset + MSG_CHUNK, romBytes.length);
+    sendQueue([{
+      PB_CMD: CMD.ROM_INSTALL_DATA,
+      PB_OFFSET: offset,
+      PB_DATA: Array.prototype.slice.call(romBytes.subarray(offset, end))
+    }]);
   });
 }
 
@@ -699,6 +771,10 @@ Pebble.addEventListener('appmessage', function(e) {
     sendRomList();
   } else if (p.PB_CMD === CMD.ROM_SELECT) {
     selectRom(p.PB_BANK | 0);
+  } else if (p.PB_CMD === CMD.ROM_INSTALL_ACK) {
+    sendInstallAtOffset(p.PB_OFFSET);
+  } else if (p.PB_CMD === CMD.ROM_INSTALL_DONE) {
+    console.log('pebbleboy: ROM installed and verified on watch');
   }
 });
 

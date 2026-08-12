@@ -14,14 +14,19 @@
 
 #define FRAME_MS 33
 #define FRAME_CATCHUP_LIMIT_MS (FRAME_MS * 4)
-#define FRAMES_PER_TICK 2
-#define MAX_CPU_STEPS_PER_TICK 40000u
+#define NORMAL_FRAMES_PER_TICK 2u
+#define FAST_FRAMES_PER_TICK 4u
 #define PHONE_INFO_RETRY_MS 2000
-#define CART_RAM_WINDOW_SIZE 0x1000u
-#define CART_RAM_BANK_NONE UINT16_MAX
-#define CART_RAM_SAVE_SETTLE_MS 30000
+/* Persist storage is already chunked at 256 bytes. Paging SRAM at that same
+ * granularity avoids holding a mostly cold 4 KiB bank in the app heap. */
+#define LOCAL_CART_RAM_WINDOW_SIZE PB_SAVE_CHUNK_SIZE
 #define ROM_LIBRARY_MAX 12u
 #define ROM_SELECTOR_VISIBLE_ROWS 5u
+#define PB_PREF_AUDIO 0x50424155u /* PBAU */
+#define PB_PREF_SCALE 0x50425343u /* PBSC */
+#define PB_RTC_KEY_PREFIX 0x52540000u /* RT + ROM checksum */
+#define PB_RTC_MAGIC 0x50525443u /* PRTC */
+#define PB_RTC_VERSION 1u
 
 #if defined(__GNUC__)
 #define PB_SIZE_OPT __attribute__((optimize("Os")))
@@ -36,6 +41,7 @@ static struct gb_s *s_gb;
 static PbCart *s_cart;
 static bool s_running;
 static bool s_in_focus = true;
+static bool s_fast_forward;
 static bool s_phone_offer_seen;
 static bool s_phone_library_seen;
 static bool s_rom_selector;
@@ -46,31 +52,28 @@ static char s_rom_titles[ROM_LIBRARY_MAX][17];
 static uint8_t *s_cart_ram;
 static size_t s_cart_ram_size;
 static size_t s_cart_ram_window_size;
-static uint16_t s_cart_ram_bank;
 static bool s_cart_ram_dirty;
-static bool s_cart_ram_paused;
-static bool s_cart_ram_faulted;
-static bool s_cart_ram_loading;
-static bool s_cart_ram_saving;
-static uint16_t s_cart_ram_loading_bank;
-static uint16_t s_cart_ram_pending_bank;
-static uint16_t s_cart_ram_loaded_bytes;
-static uint64_t s_cart_ram_dirty_ms;
-static bool s_cart_ram_local;
 static PbSave s_local_save;
+static bool s_rtc_active;
+static uint16_t s_rtc_checksum;
 static char s_status[80];
 static uint32_t s_frames;
 static uint64_t s_last_log_ms;
 static uint32_t s_last_log_frame;
 static uint64_t s_last_phone_info_request_ms;
-static uint32_t s_frame_budget_hits;
 static uint64_t s_next_frame_deadline_ms;
-static bool s_phone_bank_load_pending;
-static uint16_t s_phone_bank_load_bank;
-static uint16_t s_phone_bank_load_offset;
-static uint16_t s_phone_bank_load_size;
-static bool s_phone_bank_load_demand;
-static uint64_t s_phone_bank_load_ms;
+
+#ifdef PEBBLEBOY_APP_BLOB
+typedef struct {
+  bool active;
+  uint32_t size;
+  uint32_t crc32;
+  uint32_t offset;
+  char title[17];
+} PbRomInstall;
+
+static PbRomInstall s_rom_install;
+#endif
 
 typedef struct {
   uint32_t cpu_ms;
@@ -89,32 +92,14 @@ typedef struct {
 static PbPerfProfile s_profile;
 
 typedef struct {
-  bool gb_halt;
-  bool gb_ime;
-  bool gb_frame;
-  bool lcd_blank;
-  bool cart_is_mbc3O;
-  int8_t mbc;
-  uint8_t cart_ram;
-  uint16_t num_rom_banks_mask;
-  uint8_t num_ram_banks;
-  uint16_t selected_rom_bank;
-  uint8_t cart_ram_bank;
-  uint8_t enable_cart_ram;
-  uint8_t cart_mode_select;
-  struct cpu_registers_s cpu_reg;
-  struct count_s counter;
-  uint8_t hram_io[HRAM_IO_SIZE];
-  uint8_t oam[OAM_SIZE];
-  uint8_t bg_palette[4];
-  uint8_t sp_palette[8];
-  uint8_t window_clear;
-  uint8_t WY;
-  bool frame_skip_count;
-  bool interlace_count;
-} PbGbFrameCheckpoint;
-
-static PbGbFrameCheckpoint s_frame_checkpoint;
+  uint32_t magic;
+  uint16_t version;
+  uint16_t rom_checksum;
+  uint8_t registers[5];
+  uint8_t reserved[3];
+  uint32_t saved_at;
+  uint32_t saved_at_inverse;
+} PbRtcPersist;
 
 static void prv_frame_timer_cb(void *data);
 static void prv_schedule_frame_timer(uint32_t delay_ms);
@@ -177,132 +162,50 @@ static void prv_update_canvas_frame(void) {
   layer_mark_dirty(s_canvas);
 }
 
+static void prv_apply_phone_settings(const PbPhoneEvent *event) {
+  PbVideoScale scale = event->video_scale <= PB_VIDEO_SCALE_ASPECT_FIT
+                           ? (PbVideoScale)event->video_scale
+                           : PB_VIDEO_SCALE_1X;
+  pb_video_set_scale(scale);
+  pb_audio_set_enabled(event->audio_enabled);
+  persist_write_int(PB_PREF_SCALE, scale);
+  persist_write_int(PB_PREF_AUDIO, event->audio_enabled ? 1 : 0);
+  prv_update_canvas_frame();
+}
+
 static uint8_t prv_rom_read(struct gb_s *gb, const uint_fast32_t addr) {
   PbCart *cart = (PbCart *)gb->direct.priv;
   return pb_cart_read(cart, (uint32_t)addr);
 }
 
-static void prv_cart_ram_show_status(const char *action, uint16_t bank) {
-  snprintf(s_status, sizeof(s_status), "%s SRAM %u", action, (unsigned)bank);
-  if (s_canvas) {
-    layer_mark_dirty(s_canvas);
-  }
-}
-
-static bool prv_ensure_cart_ram_window(void) {
-  if (s_cart_ram) {
-    return true;
-  }
-  if (!s_cart_ram_size || !s_cart_ram_window_size) {
+static bool prv_select_local_save_addr(size_t addr) {
+  if (addr >= s_cart_ram_size) {
     return false;
   }
-
-  s_cart_ram = malloc(s_cart_ram_window_size);
-  if (!s_cart_ram) {
-    s_cart_ram_window_size = 0;
-    APP_LOG(APP_LOG_LEVEL_WARNING,
-            "phone SRAM window allocation failed for %u bytes",
-            (unsigned)s_cart_ram_size);
-    prv_set_status("No SRAM heap");
-    return false;
-  }
-
-  memset(s_cart_ram, 0xFF, s_cart_ram_window_size);
-  s_cart_ram_bank = CART_RAM_BANK_NONE;
-  s_cart_ram_loading_bank = CART_RAM_BANK_NONE;
-  s_cart_ram_pending_bank = CART_RAM_BANK_NONE;
-  APP_LOG(APP_LOG_LEVEL_INFO,
-          "phone SRAM window allocated: %u/%u bytes, heap free=%u used=%u",
-          (unsigned)s_cart_ram_window_size, (unsigned)s_cart_ram_size,
-          (unsigned)heap_bytes_free(), (unsigned)heap_bytes_used());
-  return true;
-}
-
-static bool prv_start_cart_ram_load(uint16_t bank) {
-  if (!prv_ensure_cart_ram_window() || s_cart_ram_loading || s_cart_ram_saving) {
-    return false;
-  }
-  if (!gb_phone_request_sram_load(bank, (uint16_t)s_cart_ram_window_size,
-                                  (uint32_t)s_cart_ram_size)) {
-    return false;
-  }
-
-  memset(s_cart_ram, 0xFF, s_cart_ram_window_size);
-  s_cart_ram_bank = CART_RAM_BANK_NONE;
-  s_cart_ram_loading = true;
-  s_cart_ram_loading_bank = bank;
-  s_cart_ram_loaded_bytes = 0;
-  s_cart_ram_paused = true;
-  prv_cart_ram_show_status("Loading", bank);
-  APP_LOG(APP_LOG_LEVEL_INFO, "phone SRAM load requested bank %u size=%u",
-          (unsigned)bank, (unsigned)s_cart_ram_window_size);
-  return true;
-}
-
-static bool prv_start_cart_ram_save(uint16_t pending_bank) {
-  if (!s_cart_ram || s_cart_ram_bank == CART_RAM_BANK_NONE ||
-      s_cart_ram_loading || s_cart_ram_saving) {
-    return false;
-  }
-  if (!gb_phone_save_sram_bank(s_cart_ram_bank, s_cart_ram,
-                               (uint16_t)s_cart_ram_window_size,
-                               (uint32_t)s_cart_ram_size)) {
-    return false;
-  }
-
-  s_cart_ram_saving = true;
-  s_cart_ram_pending_bank = pending_bank;
-  s_cart_ram_paused = true;
-  prv_cart_ram_show_status("Saving", s_cart_ram_bank);
-  APP_LOG(APP_LOG_LEVEL_INFO, "phone SRAM save started bank %u size=%u",
-          (unsigned)s_cart_ram_bank, (unsigned)s_cart_ram_window_size);
-  return true;
-}
-
-static bool prv_cart_ram_select_bank(uint16_t bank) {
-  if (!s_cart_ram_size || !s_cart_ram_window_size) {
-    return false;
-  }
-  if (!prv_ensure_cart_ram_window()) {
-    return false;
-  }
-  if (bank == s_cart_ram_bank && !s_cart_ram_loading && !s_cart_ram_saving) {
+  if (addr >= s_local_save.window_start &&
+      addr - s_local_save.window_start < s_local_save.data_size) {
     return true;
   }
 
-  s_cart_ram_paused = true;
-  s_cart_ram_faulted = true;
-  s_cart_ram_pending_bank = bank;
-
-  if (s_cart_ram_saving || s_cart_ram_loading) {
+  uint64_t started_ms = prv_now_ms();
+  if (!pb_save_select_window(&s_local_save, addr)) {
+    prv_set_status("SRAM window failed");
     return false;
   }
-  if (s_cart_ram_dirty && s_cart_ram_bank != CART_RAM_BANK_NONE) {
-    if (!prv_start_cart_ram_save(bank)) {
-      prv_cart_ram_show_status("Saving", s_cart_ram_bank);
-    }
-    return false;
-  }
-  if (!prv_start_cart_ram_load(bank)) {
-    prv_cart_ram_show_status("Loading", bank);
-  }
-  return false;
+  s_cart_ram_dirty = false;
+  APP_LOG(APP_LOG_LEVEL_DEBUG, "local SRAM window=%lu elapsed=%lu",
+          (unsigned long)s_local_save.window_start,
+          (unsigned long)prv_elapsed_ms(started_ms));
+  return true;
 }
 
 static uint8_t prv_cart_ram_read(struct gb_s *gb, const uint_fast32_t addr) {
   (void)gb;
   if (addr < s_cart_ram_size) {
-    if (s_cart_ram_local) {
-      return pb_save_read(&s_local_save, addr);
-    }
-    uint16_t bank = (uint16_t)(addr / CART_RAM_WINDOW_SIZE);
-    if (!prv_cart_ram_select_bank(bank)) {
+    if (!prv_select_local_save_addr(addr)) {
       return 0xFF;
     }
-    size_t offset = (size_t)(addr % CART_RAM_WINDOW_SIZE);
-    if (offset < s_cart_ram_window_size) {
-      return s_cart_ram[offset];
-    }
+    return pb_save_read(&s_local_save, addr);
   }
   return 0xFF;
 }
@@ -310,22 +213,11 @@ static uint8_t prv_cart_ram_read(struct gb_s *gb, const uint_fast32_t addr) {
 static void prv_cart_ram_write(struct gb_s *gb, const uint_fast32_t addr, const uint8_t value) {
   (void)gb;
   if (addr < s_cart_ram_size) {
-    if (s_cart_ram_local) {
-      if (pb_save_write(&s_local_save, addr, value)) {
-        s_cart_ram_dirty = true;
-        s_cart_ram_dirty_ms = prv_now_ms();
-      }
+    if (!prv_select_local_save_addr(addr)) {
       return;
     }
-    uint16_t bank = (uint16_t)(addr / CART_RAM_WINDOW_SIZE);
-    if (!prv_cart_ram_select_bank(bank)) {
-      return;
-    }
-    size_t offset = (size_t)(addr % CART_RAM_WINDOW_SIZE);
-    if (offset < s_cart_ram_window_size) {
-      s_cart_ram[offset] = value;
+    if (pb_save_write(&s_local_save, addr, value)) {
       s_cart_ram_dirty = true;
-      s_cart_ram_dirty_ms = prv_now_ms();
     }
   }
 }
@@ -337,64 +229,33 @@ static void prv_gb_error(struct gb_s *gb, const enum gb_error_e error, const uin
 }
 
 static void prv_lcd_draw_line(struct gb_s *gb, const uint8_t *pixels, const uint_fast8_t line) {
-  (void)gb;
-  pb_video_draw_line(pixels, (uint8_t)line);
+  if (gb->cgb.cgbMode) {
+    pb_video_draw_line_cgb(pixels, gb->cgb.fixPalette, (uint8_t)line);
+  } else {
+    pb_video_draw_line(pixels, (uint8_t)line);
+  }
 }
 
-static void prv_save_frame_checkpoint(void) {
-  s_frame_checkpoint.gb_halt = s_gb->gb_halt;
-  s_frame_checkpoint.gb_ime = s_gb->gb_ime;
-  s_frame_checkpoint.gb_frame = s_gb->gb_frame;
-  s_frame_checkpoint.lcd_blank = s_gb->lcd_blank;
-  s_frame_checkpoint.cart_is_mbc3O = s_gb->cart_is_mbc3O;
-  s_frame_checkpoint.mbc = s_gb->mbc;
-  s_frame_checkpoint.cart_ram = s_gb->cart_ram;
-  s_frame_checkpoint.num_rom_banks_mask = s_gb->num_rom_banks_mask;
-  s_frame_checkpoint.num_ram_banks = s_gb->num_ram_banks;
-  s_frame_checkpoint.selected_rom_bank = s_gb->selected_rom_bank;
-  s_frame_checkpoint.cart_ram_bank = s_gb->cart_ram_bank;
-  s_frame_checkpoint.enable_cart_ram = s_gb->enable_cart_ram;
-  s_frame_checkpoint.cart_mode_select = s_gb->cart_mode_select;
-  s_frame_checkpoint.cpu_reg = s_gb->cpu_reg;
-  s_frame_checkpoint.counter = s_gb->counter;
-  memcpy(s_frame_checkpoint.hram_io, s_gb->hram_io, sizeof(s_frame_checkpoint.hram_io));
-  memcpy(s_frame_checkpoint.oam, s_gb->oam, sizeof(s_frame_checkpoint.oam));
-  memcpy(s_frame_checkpoint.bg_palette, s_gb->display.bg_palette,
-         sizeof(s_frame_checkpoint.bg_palette));
-  memcpy(s_frame_checkpoint.sp_palette, s_gb->display.sp_palette,
-         sizeof(s_frame_checkpoint.sp_palette));
-  s_frame_checkpoint.window_clear = s_gb->display.window_clear;
-  s_frame_checkpoint.WY = s_gb->display.WY;
-  s_frame_checkpoint.frame_skip_count = s_gb->display.frame_skip_count;
-  s_frame_checkpoint.interlace_count = s_gb->display.interlace_count;
-}
-
-static void prv_restore_frame_checkpoint(void) {
-  s_gb->gb_halt = s_frame_checkpoint.gb_halt;
-  s_gb->gb_ime = s_frame_checkpoint.gb_ime;
-  s_gb->gb_frame = s_frame_checkpoint.gb_frame;
-  s_gb->lcd_blank = s_frame_checkpoint.lcd_blank;
-  s_gb->cart_is_mbc3O = s_frame_checkpoint.cart_is_mbc3O;
-  s_gb->mbc = s_frame_checkpoint.mbc;
-  s_gb->cart_ram = s_frame_checkpoint.cart_ram;
-  s_gb->num_rom_banks_mask = s_frame_checkpoint.num_rom_banks_mask;
-  s_gb->num_ram_banks = s_frame_checkpoint.num_ram_banks;
-  s_gb->selected_rom_bank = s_frame_checkpoint.selected_rom_bank;
-  s_gb->cart_ram_bank = s_frame_checkpoint.cart_ram_bank;
-  s_gb->enable_cart_ram = s_frame_checkpoint.enable_cart_ram;
-  s_gb->cart_mode_select = s_frame_checkpoint.cart_mode_select;
-  s_gb->cpu_reg = s_frame_checkpoint.cpu_reg;
-  s_gb->counter = s_frame_checkpoint.counter;
-  memcpy(s_gb->hram_io, s_frame_checkpoint.hram_io, sizeof(s_frame_checkpoint.hram_io));
-  memcpy(s_gb->oam, s_frame_checkpoint.oam, sizeof(s_frame_checkpoint.oam));
-  memcpy(s_gb->display.bg_palette, s_frame_checkpoint.bg_palette,
-         sizeof(s_frame_checkpoint.bg_palette));
-  memcpy(s_gb->display.sp_palette, s_frame_checkpoint.sp_palette,
-         sizeof(s_frame_checkpoint.sp_palette));
-  s_gb->display.window_clear = s_frame_checkpoint.window_clear;
-  s_gb->display.WY = s_frame_checkpoint.WY;
-  s_gb->display.frame_skip_count = s_frame_checkpoint.frame_skip_count;
-  s_gb->display.interlace_count = s_frame_checkpoint.interlace_count;
+static void prv_set_fast_forward(bool enabled) {
+  if (s_fast_forward == enabled) {
+    return;
+  }
+  s_fast_forward = enabled;
+  if (s_gb) {
+    s_gb->direct.frame_skip = !enabled;
+    s_gb->display.lcd_draw_line = prv_lcd_draw_line;
+    if (!enabled) {
+      s_gb->display.frame_skip_count = 0;
+    }
+  }
+  if (enabled) {
+    pb_audio_suspend_stream();
+  }
+  s_next_frame_deadline_ms = prv_now_ms() + FRAME_MS;
+  APP_LOG(APP_LOG_LEVEL_INFO, "fast-forward %s", enabled ? "enabled" : "disabled");
+  if (s_canvas) {
+    layer_mark_dirty(s_canvas);
+  }
 }
 
 static void prv_free_save_ram(void) {
@@ -403,17 +264,7 @@ static void prv_free_save_ram(void) {
   memset(&s_local_save, 0, sizeof(s_local_save));
   s_cart_ram_size = 0;
   s_cart_ram_window_size = 0;
-  s_cart_ram_bank = CART_RAM_BANK_NONE;
   s_cart_ram_dirty = false;
-  s_cart_ram_paused = false;
-  s_cart_ram_faulted = false;
-  s_cart_ram_loading = false;
-  s_cart_ram_saving = false;
-  s_cart_ram_loading_bank = CART_RAM_BANK_NONE;
-  s_cart_ram_pending_bank = CART_RAM_BANK_NONE;
-  s_cart_ram_loaded_bytes = 0;
-  s_cart_ram_dirty_ms = 0;
-  s_cart_ram_local = false;
 }
 
 static int prv_local_save_read(uint32_t key, void *data, size_t size, void *context) {
@@ -426,8 +277,82 @@ static int prv_local_save_write(uint32_t key, const void *data, size_t size, voi
   return persist_write_data(key, data, size);
 }
 
+static uint16_t prv_rom_checksum(void) {
+  uint16_t checksum = (uint16_t)((uint16_t)pb_cart_read(s_cart, 0x14E) << 8);
+  return checksum | pb_cart_read(s_cart, 0x14F);
+}
+
+static uint32_t prv_rtc_key(uint16_t rom_checksum) {
+  return PB_RTC_KEY_PREFIX | rom_checksum;
+}
+
+static bool prv_rtc_registers_valid(const uint8_t registers[5]) {
+  return registers[0] < 60 && registers[1] < 60 && registers[2] < 24 &&
+         (registers[4] & (uint8_t)~0xC1u) == 0;
+}
+
+static void prv_flush_rtc(const char *reason) {
+  if (!s_rtc_active || !s_gb || !s_gb->cart_has_rtc) {
+    return;
+  }
+  time_t now = time(NULL);
+  uint32_t saved_at = now > 0 ? (uint32_t)now : 0;
+  PbRtcPersist state = {
+    .magic = PB_RTC_MAGIC,
+    .version = PB_RTC_VERSION,
+    .rom_checksum = s_rtc_checksum,
+    .saved_at = saved_at,
+    .saved_at_inverse = ~saved_at,
+  };
+  memcpy(state.registers, s_gb->cart_rtc, sizeof(state.registers));
+  int written = persist_write_data(prv_rtc_key(s_rtc_checksum), &state, sizeof(state));
+  APP_LOG(written == (int)sizeof(state) ? APP_LOG_LEVEL_INFO : APP_LOG_LEVEL_ERROR,
+          "RTC %s saved=%d time=%u:%02u:%02u day=%u flags=%02x",
+          reason, written, (unsigned)state.registers[2],
+          (unsigned)state.registers[1], (unsigned)state.registers[0],
+          (unsigned)(state.registers[3] | ((state.registers[4] & 1u) << 8)),
+          (unsigned)state.registers[4]);
+}
+
+static void prv_init_rtc(void) {
+  s_rtc_active = false;
+  if (!s_gb->cart_has_rtc) {
+    return;
+  }
+
+  s_rtc_checksum = prv_rom_checksum();
+  s_rtc_active = true;
+  PbRtcPersist state;
+  int read = persist_read_data(prv_rtc_key(s_rtc_checksum), &state, sizeof(state));
+  if (read != (int)sizeof(state) || state.magic != PB_RTC_MAGIC ||
+      state.version != PB_RTC_VERSION || state.rom_checksum != s_rtc_checksum ||
+      state.saved_at_inverse != ~state.saved_at ||
+      !prv_rtc_registers_valid(state.registers)) {
+    APP_LOG(APP_LOG_LEVEL_INFO, "RTC initialized without persisted state checksum=%04x",
+            (unsigned)s_rtc_checksum);
+    return;
+  }
+
+  memcpy(s_gb->cart_rtc, state.registers, sizeof(s_gb->cart_rtc));
+  time_t now = time(NULL);
+  uint32_t elapsed = now > 0 && (uint32_t)now >= state.saved_at
+                         ? (uint32_t)now - state.saved_at
+                         : 0;
+  gb_advance_rtc(s_gb, elapsed);
+  memcpy(s_gb->cart_rtc_latched, s_gb->cart_rtc,
+         sizeof(s_gb->cart_rtc_latched));
+  s_gb->rtc_latched = false;
+  s_gb->rtc_latch_last = false;
+  APP_LOG(APP_LOG_LEVEL_INFO,
+          "RTC restored elapsed=%lu time=%u:%02u:%02u day=%u flags=%02x",
+          (unsigned long)elapsed, (unsigned)s_gb->cart_rtc[2],
+          (unsigned)s_gb->cart_rtc[1], (unsigned)s_gb->cart_rtc[0],
+          (unsigned)(s_gb->cart_rtc[3] | ((s_gb->cart_rtc[4] & 1u) << 8)),
+          (unsigned)s_gb->cart_rtc[4]);
+}
+
 static void prv_flush_local_save(const char *reason) {
-  if (!s_cart_ram_local || !s_cart_ram_dirty) {
+  if (!s_cart_ram || !s_cart_ram_dirty) {
     return;
   }
   uint64_t started_ms = prv_now_ms();
@@ -445,6 +370,7 @@ static void prv_focus_handler(bool in_focus) {
   if (!in_focus) {
     pb_audio_suspend_stream();
     prv_flush_local_save("focus-loss");
+    prv_flush_rtc("focus-loss");
     return;
   }
 
@@ -461,17 +387,21 @@ static bool prv_init_local_save(size_t save_size) {
     return false;
   }
 
-  s_cart_ram = malloc(save_size);
+  size_t window_size = save_size < LOCAL_CART_RAM_WINDOW_SIZE
+                           ? save_size
+                           : LOCAL_CART_RAM_WINDOW_SIZE;
+  s_cart_ram = malloc(window_size);
   if (!s_cart_ram) {
-    APP_LOG(APP_LOG_LEVEL_ERROR, "local SRAM allocation failed: %u", (unsigned)save_size);
+    APP_LOG(APP_LOG_LEVEL_ERROR, "local SRAM allocation failed: %u/%u",
+            (unsigned)window_size, (unsigned)save_size);
     prv_set_status("No SRAM heap");
     return false;
   }
 
-  uint16_t rom_checksum = (uint16_t)((uint16_t)pb_cart_read(s_cart, 0x14E) << 8);
-  rom_checksum |= pb_cart_read(s_cart, 0x14F);
-  if (!pb_save_init(&s_local_save, s_cart_ram, save_size, rom_checksum,
-                    prv_local_save_read, prv_local_save_write, NULL)) {
+  uint16_t rom_checksum = prv_rom_checksum();
+  if (!pb_save_init_window(&s_local_save, s_cart_ram, save_size, window_size,
+                           rom_checksum, prv_local_save_read,
+                           prv_local_save_write, NULL)) {
     free(s_cart_ram);
     s_cart_ram = NULL;
     prv_set_status("SRAM init failed");
@@ -479,11 +409,10 @@ static bool prv_init_local_save(size_t save_size) {
   }
 
   s_cart_ram_size = save_size;
-  s_cart_ram_window_size = save_size;
-  s_cart_ram_local = true;
+  s_cart_ram_window_size = window_size;
   APP_LOG(APP_LOG_LEVEL_INFO,
-          "local SRAM ready: %u checksum=%04x restored=%u",
-          (unsigned)save_size, (unsigned)rom_checksum,
+          "local SRAM ready: %u/%u checksum=%04x restored=%u",
+          (unsigned)window_size, (unsigned)save_size, (unsigned)rom_checksum,
           (unsigned)s_local_save.restored_chunks);
   APP_LOG(APP_LOG_LEVEL_INFO,
           "local SRAM reads=%u bytes=%lu heap=%u/%u",
@@ -506,16 +435,15 @@ static const char *prv_init_error_name(enum gb_init_error_e err) {
 }
 
 static bool prv_start_from_cart(const char *source_name) {
+  prv_flush_rtc("ROM-change");
+  s_rtc_active = false;
   s_running = false;
+  s_fast_forward = false;
   prv_free_save_ram();
   pb_video_clear(0);
 
   if (!pb_cart_has_bank(s_cart, 0)) {
     pb_cart_ensure_bank(s_cart, 0);
-    prv_set_status("Loading bank 0");
-    return false;
-  }
-  if (!pb_cart_ensure_fixed_bank(s_cart)) {
     prv_set_status("Loading bank 0");
     return false;
   }
@@ -528,6 +456,7 @@ static bool prv_start_from_cart(const char *source_name) {
     return false;
   }
   pb_cart_set_active_bank(s_cart, s_gb->selected_rom_bank);
+  prv_init_rtc();
 
   gb_init_lcd(s_gb, prv_lcd_draw_line);
   s_gb->direct.frame_skip = true;
@@ -535,16 +464,7 @@ static bool prv_start_from_cart(const char *source_name) {
 
   size_t save_size = 0;
   if (gb_get_save_size_s(s_gb, &save_size) == 0 && save_size > 0) {
-    if (s_cart->mode == PB_CART_MODE_PHONE) {
-      s_cart_ram_size = save_size;
-      s_cart_ram_window_size = save_size < CART_RAM_WINDOW_SIZE ? save_size : CART_RAM_WINDOW_SIZE;
-      s_cart_ram_bank = CART_RAM_BANK_NONE;
-      s_cart_ram_loading_bank = CART_RAM_BANK_NONE;
-      s_cart_ram_pending_bank = CART_RAM_BANK_NONE;
-      APP_LOG(APP_LOG_LEVEL_INFO,
-              "phone SRAM window deferred: %u/%u bytes",
-              (unsigned)s_cart_ram_window_size, (unsigned)save_size);
-    } else if (!prv_init_local_save(save_size)) {
+    if (!prv_init_local_save(save_size)) {
       return false;
     } else {
       APP_LOG(APP_LOG_LEVEL_INFO, "using local persistent SRAM: %u",
@@ -561,35 +481,9 @@ static bool prv_start_from_cart(const char *source_name) {
   s_frames = 0;
   s_last_log_frame = 0;
   s_last_log_ms = prv_now_ms();
-  s_frame_budget_hits = 0;
   memset(&s_profile, 0, sizeof(s_profile));
   s_running = true;
   return true;
-}
-
-static bool prv_request_phone_bank(uint16_t bank, uint16_t offset, uint16_t size,
-                                   bool demand, void *context) {
-  (void)context;
-  if (s_phone_bank_load_pending) {
-    return false;
-  }
-  uint64_t started_ms = prv_now_ms();
-  if (gb_phone_request_bank(bank, offset, size)) {
-    s_phone_bank_load_pending = true;
-    s_phone_bank_load_bank = bank;
-    s_phone_bank_load_offset = offset;
-    s_phone_bank_load_size = size;
-    s_phone_bank_load_demand = demand;
-    s_phone_bank_load_ms = started_ms;
-    if (demand) {
-      snprintf(s_status, sizeof(s_status), "Loading bank %u", bank);
-      layer_mark_dirty(s_canvas);
-    }
-    return true;
-  }
-  APP_LOG(APP_LOG_LEVEL_WARNING, "phone request busy for bank %u fill %u",
-          (unsigned)bank, (unsigned)offset);
-  return false;
 }
 
 void pb_core_rom_bank_changed(struct gb_s *gb) {
@@ -599,73 +493,141 @@ void pb_core_rom_bank_changed(struct gb_s *gb) {
 }
 
 bool pb_core_should_pause(struct gb_s *gb) {
-  return gb == s_gb && ((s_cart && pb_cart_paused(s_cart)) || s_cart_ram_paused);
+  return gb == s_gb && s_cart && s_cart->failed;
 }
 
-static void prv_resume_cart_ram(void) {
-  s_cart_ram_paused = false;
-  s_cart_ram_faulted = false;
-  s_cart_ram_pending_bank = CART_RAM_BANK_NONE;
-  prv_set_status("Resumed");
-  prv_schedule_frame_timer(1);
+#ifdef PEBBLEBOY_APP_BLOB
+static void prv_install_fail(const char *status) {
+  APP_LOG(APP_LOG_LEVEL_ERROR, "ROM install failed at %lu/%lu: %s",
+          (unsigned long)s_rom_install.offset, (unsigned long)s_rom_install.size,
+          status ? status : "unknown error");
+  if (s_rom_install.active) {
+    app_blob_delete();
+  }
+  memset(&s_rom_install, 0, sizeof(s_rom_install));
+  pb_cart_init_empty(s_cart);
+  prv_set_status(status ? status : "ROM install failed");
 }
 
-static void prv_maybe_continue_cart_ram(void) {
-  if (!s_cart_ram_paused || s_cart_ram_loading || s_cart_ram_saving ||
-      s_cart_ram_pending_bank == CART_RAM_BANK_NONE) {
+static bool prv_start_matching_blob(uint32_t size, uint32_t crc32) {
+  AppBlobInfo info;
+  if (app_blob_get_info(&info) != S_SUCCESS || info.size != size || info.crc32 != crc32) {
+    return false;
+  }
+
+  if (s_cart->mode == PB_CART_MODE_BLOB && s_cart->rom_size == size && s_running) {
+    return true;
+  }
+
+  prv_flush_local_save("ROM-change");
+  prv_free_save_ram();
+  if (!pb_cart_init_blob(s_cart, size)) {
+    prv_set_status(s_cart->error);
+    return true;
+  }
+  prv_start_from_cart("flash");
+  return true;
+}
+
+static void prv_begin_install(const PbPhoneEvent *event) {
+  s_running = false;
+  pb_audio_suspend_stream();
+  prv_flush_local_save("ROM-change");
+  prv_flush_rtc("ROM-change");
+  s_rtc_active = false;
+  prv_free_save_ram();
+  pb_cart_init_empty(s_cart);
+  memset(&s_rom_install, 0, sizeof(s_rom_install));
+
+  status_t result = app_blob_begin(event->size);
+  if (result != S_SUCCESS) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "app_blob_begin size=%lu failed: %ld free=%lu",
+            (unsigned long)event->size, (long)result,
+            (unsigned long)app_blob_get_free_size());
+    prv_set_status(result == E_OUT_OF_STORAGE ? "Not enough watch flash"
+                                              : "Flash install failed");
     return;
   }
 
-  uint16_t pending_bank = s_cart_ram_pending_bank;
-  if (pending_bank == s_cart_ram_bank) {
-    prv_resume_cart_ram();
+  s_rom_install.active = true;
+  s_rom_install.size = event->size;
+  s_rom_install.crc32 = event->crc32;
+  snprintf(s_rom_install.title, sizeof(s_rom_install.title), "%s",
+           event->title[0] ? event->title : "ROM");
+  snprintf(s_status, sizeof(s_status), "Installing %s 0%%", s_rom_install.title);
+  layer_mark_dirty(s_canvas);
+  if (!gb_phone_install_ack(0)) {
+    prv_install_fail("Phone link busy");
+  }
+}
+
+static void prv_install_data(const PbPhoneEvent *event) {
+  if (!s_rom_install.active) {
     return;
   }
-  if (s_cart_ram_dirty && s_cart_ram_bank != CART_RAM_BANK_NONE) {
-    prv_start_cart_ram_save(pending_bank);
+  if (event->offset != s_rom_install.offset) {
+    if (event->offset < s_rom_install.offset) {
+      gb_phone_install_ack(s_rom_install.offset);
+      return;
+    }
+    prv_install_fail("ROM chunks out of order");
+    return;
+  }
+  if (!event->data_len || event->data_len > 512u ||
+      event->offset + event->data_len > s_rom_install.size) {
+    prv_install_fail("Invalid ROM chunk");
+    return;
+  }
+
+  int written = app_blob_write(event->offset, event->data, event->data_len);
+  if (written != event->data_len) {
+    prv_install_fail("Watch flash write failed");
+    return;
+  }
+  s_rom_install.offset += event->data_len;
+  if ((s_rom_install.offset & 0xFFFFu) == 0 ||
+      s_rom_install.offset == s_rom_install.size) {
+    unsigned percent = (unsigned)((s_rom_install.offset * 100u) / s_rom_install.size);
+    snprintf(s_status, sizeof(s_status), "Installing %s %u%%",
+             s_rom_install.title, percent);
+    layer_mark_dirty(s_canvas);
+  }
+  if (!gb_phone_install_ack(s_rom_install.offset)) {
+    prv_install_fail("Phone link busy");
+  }
+}
+
+static void prv_finish_install(const PbPhoneEvent *event) {
+  if (!s_rom_install.active) {
+    AppBlobInfo info;
+    if (app_blob_get_info(&info) == S_SUCCESS && info.crc32 == event->crc32) {
+      gb_phone_install_done();
+    }
+    return;
+  }
+  if (s_rom_install.offset != s_rom_install.size || event->crc32 != s_rom_install.crc32) {
+    prv_install_fail("ROM transfer incomplete");
+    return;
+  }
+
+  prv_set_status("Verifying ROM");
+  status_t result = app_blob_commit(s_rom_install.crc32);
+  if (result != S_SUCCESS) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "app_blob_commit failed: %ld", (long)result);
+    prv_install_fail("ROM verification failed");
+    return;
+  }
+
+  uint32_t size = s_rom_install.size;
+  memset(&s_rom_install, 0, sizeof(s_rom_install));
+  if (!pb_cart_init_blob(s_cart, size)) {
+    prv_set_status(s_cart->error);
   } else {
-    prv_start_cart_ram_load(pending_bank);
+    prv_start_from_cart("flash");
   }
+  gb_phone_install_done();
 }
-
-static void prv_maybe_flush_cart_ram(uint64_t now) {
-  /* Local persistence is synchronous physical-flash I/O and can block an app
-   * tick for over 100 ms. Flush it on focus loss/shutdown instead; phone SRAM
-   * remains asynchronous and can retain its normal settle timer. */
-  if (s_cart_ram_local) {
-    return;
-  }
-  if (!s_cart_ram || !s_cart_ram_dirty || s_cart_ram_bank == CART_RAM_BANK_NONE ||
-      s_cart_ram_paused || s_cart_ram_loading || s_cart_ram_saving) {
-    return;
-  }
-  if (now - s_cart_ram_dirty_ms < CART_RAM_SAVE_SETTLE_MS) {
-    return;
-  }
-
-  s_cart_ram_faulted = false;
-  if (!prv_start_cart_ram_save(s_cart_ram_bank)) {
-    APP_LOG(APP_LOG_LEVEL_WARNING, "phone SRAM save busy for bank %u",
-            (unsigned)s_cart_ram_bank);
-  }
-}
-
-static void prv_maybe_prefetch_next_phone_fill(const PbPhoneEvent *event, bool after_demand) {
-  if (!after_demand || !s_running || !s_cart || s_cart->mode != PB_CART_MODE_PHONE ||
-      pb_cart_paused(s_cart) || s_cart_ram_paused || s_phone_bank_load_pending) {
-    return;
-  }
-  if (event->bank != s_cart->active_bank || event->size >= PB_CART_BANK_SIZE) {
-    return;
-  }
-
-  uint32_t next_offset = (uint32_t)event->offset + event->size;
-  if (next_offset >= PB_CART_BANK_SIZE) {
-    return;
-  }
-  uint32_t addr = (uint32_t)event->bank * PB_CART_BANK_SIZE + next_offset;
-  pb_cart_prefetch_addr(s_cart, addr);
-}
+#endif
 
 static PB_SIZE_OPT void prv_phone_event(const PbPhoneEvent *event, void *context) {
   (void)context;
@@ -708,98 +670,49 @@ static PB_SIZE_OPT void prv_phone_event(const PbPhoneEvent *event, void *context
       }
       break;
     case PB_PHONE_EVENT_INFO:
-      if (s_cart && s_cart->mode == PB_CART_MODE_PHONE) {
-        APP_LOG(APP_LOG_LEVEL_INFO, "ignoring duplicate phone ROM info");
-        break;
-      }
+#ifdef PEBBLEBOY_APP_BLOB
       s_phone_offer_seen = true;
       s_rom_selection_pending = false;
       prv_set_rom_selector(false);
-      s_running = false;
-      prv_free_save_ram();
-      APP_LOG(APP_LOG_LEVEL_INFO, "phone info title=%s size=%lu cart=%u scale=%u",
-              event->title[0] ? event->title : "DMG ROM", event->size,
-              (unsigned)event->cart_type, (unsigned)event->video_scale);
-      pb_video_set_scale(event->video_scale <= PB_VIDEO_SCALE_ASPECT_FIT
-                             ? (PbVideoScale)event->video_scale
-                             : PB_VIDEO_SCALE_1X);
-      prv_update_canvas_frame();
-      pb_audio_set_enabled(event->audio_enabled);
-      if (pb_cart_init_phone(s_cart, event->size, prv_request_phone_bank, NULL)) {
-        snprintf(s_status, sizeof(s_status), "Phone ROM %s",
-                 event->title[0] ? event->title : "loading");
-        pb_cart_ensure_bank(s_cart, 0);
-      }
-      layer_mark_dirty(s_canvas);
-      break;
-    case PB_PHONE_EVENT_BANK_READY:
-      uint32_t latency_ms = 0;
-      bool completed_demand = false;
-      if (s_phone_bank_load_pending && s_phone_bank_load_bank == event->bank &&
-          s_phone_bank_load_offset == event->offset && s_phone_bank_load_size == event->size) {
-        latency_ms = prv_elapsed_ms(s_phone_bank_load_ms);
-        completed_demand = s_phone_bank_load_demand;
-        s_phone_bank_load_pending = false;
-        s_phone_bank_load_demand = false;
-        s_cart->stats.last_load_ms = latency_ms;
-      }
-      APP_LOG(APP_LOG_LEVEL_INFO, "phone bank %u ready fill=%u size=%u latency_ms=%lu",
-              (unsigned)event->bank, (unsigned)event->offset,
-              (unsigned)event->size, latency_ms);
-      if (!s_running && event->bank == 0) {
-        prv_start_from_cart("phone");
-      } else if (s_cart && s_cart->mode == PB_CART_MODE_PHONE && !pb_cart_paused(s_cart)) {
-        prv_set_status("Resumed");
-        prv_schedule_frame_timer(1);
-      }
-      prv_maybe_prefetch_next_phone_fill(event, completed_demand);
-      break;
-    case PB_PHONE_EVENT_SRAM_LOAD_DATA:
-      if (s_cart_ram && s_cart_ram_loading && event->bank == s_cart_ram_loading_bank &&
-          event->offset < s_cart_ram_window_size) {
-        uint16_t len = event->data_len;
-        if (event->offset + len > s_cart_ram_window_size) {
-          len = (uint16_t)(s_cart_ram_window_size - event->offset);
-        }
-        memcpy(s_cart_ram + event->offset, event->data, len);
-        if (event->offset + len > s_cart_ram_loaded_bytes) {
-          s_cart_ram_loaded_bytes = event->offset + len;
-        }
-        if (s_cart_ram_loaded_bytes >= s_cart_ram_window_size) {
-          s_cart_ram_bank = s_cart_ram_loading_bank;
-          s_cart_ram_loading = false;
-          s_cart_ram_loading_bank = CART_RAM_BANK_NONE;
-          s_cart_ram_loaded_bytes = 0;
-          s_cart_ram_dirty = false;
-          APP_LOG(APP_LOG_LEVEL_INFO, "phone SRAM bank %u loaded",
-                  (unsigned)s_cart_ram_bank);
-          prv_resume_cart_ram();
-        }
+      APP_LOG(APP_LOG_LEVEL_INFO,
+              "phone info title=%s size=%lu cart=%u crc=%08lx scale=%u",
+              event->title[0] ? event->title : "ROM", (unsigned long)event->size,
+              (unsigned)event->cart_type, (unsigned long)event->crc32,
+              (unsigned)event->video_scale);
+      prv_apply_phone_settings(event);
+      if (prv_start_matching_blob(event->size, event->crc32)) {
+        APP_LOG(APP_LOG_LEVEL_INFO, "configured ROM already installed");
+      } else {
+        prv_begin_install(event);
       }
       break;
-    case PB_PHONE_EVENT_SRAM_SAVE_DONE:
-      if (s_cart_ram_saving && event->bank == s_cart_ram_bank) {
-        s_cart_ram_saving = false;
-        s_cart_ram_dirty = false;
-        APP_LOG(APP_LOG_LEVEL_INFO, "phone SRAM bank %u saved",
-                (unsigned)event->bank);
-        if (s_cart_ram_pending_bank != CART_RAM_BANK_NONE &&
-            s_cart_ram_pending_bank != s_cart_ram_bank) {
-          uint16_t pending_bank = s_cart_ram_pending_bank;
-          if (!prv_start_cart_ram_load(pending_bank)) {
-            s_cart_ram_paused = true;
-            s_cart_ram_pending_bank = pending_bank;
-            prv_cart_ram_show_status("Loading", pending_bank);
-          }
-        } else {
-          prv_resume_cart_ram();
-        }
+#else
+      s_phone_offer_seen = true;
+      s_rom_selection_pending = false;
+      prv_set_rom_selector(false);
+      prv_apply_phone_settings(event);
+      if (!s_running) {
+        prv_set_status("URL installs require CFW");
       }
+      break;
+#endif
+    case PB_PHONE_EVENT_INSTALL_DATA:
+#ifdef PEBBLEBOY_APP_BLOB
+      prv_install_data(event);
+#endif
+      break;
+    case PB_PHONE_EVENT_INSTALL_END:
+#ifdef PEBBLEBOY_APP_BLOB
+      prv_finish_install(event);
+#endif
       break;
     case PB_PHONE_EVENT_ERROR:
-      if (s_cart && s_cart->mode == PB_CART_MODE_PHONE) {
-        pb_cart_set_error(s_cart, event->status);
+#ifdef PEBBLEBOY_APP_BLOB
+      if (s_rom_install.active) {
+        prv_install_fail(event->status[0] ? event->status : "Phone install error");
+        break;
       }
+#endif
       prv_set_status(event->status[0] ? event->status : "No ROM URL");
       break;
   }
@@ -823,11 +736,11 @@ static void prv_log_perf(void) {
   APP_LOG(APP_LOG_LEVEL_INFO,
           "io reads=%lu bytes=%lu save dirty=%u reads=%u/%lu writes=%u/%lu audio=%lu/%lu/%lu",
           stats->source_reads, stats->source_bytes,
-          (unsigned)(s_cart_ram_local ? pb_save_dirty_count(&s_local_save) : 0),
-          (unsigned)(s_cart_ram_local ? s_local_save.read_ops : 0),
-          (unsigned long)(s_cart_ram_local ? s_local_save.read_bytes : 0),
-          (unsigned)(s_cart_ram_local ? s_local_save.write_ops : 0),
-          (unsigned long)(s_cart_ram_local ? s_local_save.write_bytes : 0),
+          (unsigned)(s_cart_ram ? pb_save_dirty_count(&s_local_save) : 0),
+          (unsigned)(s_cart_ram ? s_local_save.read_ops : 0),
+          (unsigned long)(s_cart_ram ? s_local_save.read_bytes : 0),
+          (unsigned)(s_cart_ram ? s_local_save.write_ops : 0),
+          (unsigned long)(s_cart_ram ? s_local_save.write_bytes : 0),
           audio_stats->pumps, audio_stats->partial_writes,
           audio_stats->stream_errors);
   APP_LOG(APP_LOG_LEVEL_INFO,
@@ -851,13 +764,17 @@ static void prv_log_perf(void) {
 }
 
 static void prv_maybe_request_phone_info(uint64_t now) {
-  if (s_phone_offer_seen || (s_cart && s_cart->mode != PB_CART_MODE_NONE)) {
+  if (s_phone_offer_seen) {
     return;
   }
   if (now - s_last_phone_info_request_ms < PHONE_INFO_RETRY_MS) {
     return;
   }
-  if (!s_phone_library_seen) {
+  if (s_cart && s_cart->mode == PB_CART_MODE_BLOB) {
+    gb_phone_request_info();
+  } else if (s_cart && s_cart->mode != PB_CART_MODE_NONE) {
+    return;
+  } else if (!s_phone_library_seen) {
     gb_phone_request_rom_list();
   } else if (s_rom_selection_pending) {
     gb_phone_select_rom(s_rom_selected);
@@ -874,72 +791,16 @@ static void prv_schedule_frame_timer(uint32_t delay_ms) {
   s_timer = app_timer_register(delay_ms, prv_frame_timer_cb, NULL);
 }
 
-static bool prv_rom_addr_for_pc(uint16_t pc, uint32_t *addr) {
-  if (pc < 0x4000) {
-    *addr = pc;
-    return true;
-  }
-  if (pc < 0x8000) {
-    uint16_t bank = s_gb->selected_rom_bank ? s_gb->selected_rom_bank : 1;
-    *addr = (uint32_t)pc + ((uint32_t)bank - 1u) * PB_CART_BANK_SIZE;
-    return true;
-  }
-  return false;
-}
-
-static bool prv_ensure_cpu_fetch_window(void) {
-  for (uint16_t ahead = 0; ahead < 3; ahead++) {
-    uint32_t addr;
-    uint16_t pc = (uint16_t)(s_gb->cpu_reg.pc.reg + ahead);
-    if (!prv_rom_addr_for_pc(pc, &addr)) {
-      continue;
-    }
-    if (!pb_cart_ensure_addr(s_cart, addr)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-static bool prv_run_one_frame(uint32_t *step_budget) {
+static bool prv_run_one_frame(void) {
   s_gb->direct.joypad = pb_input_joypad();
   s_gb->gb_frame = false;
 
-  if (s_cart->mode == PB_CART_MODE_RESOURCE) {
-    while (!s_gb->gb_frame) {
-      __gb_step_cpu(s_gb);
-    }
-    if (s_cart->failed) {
-      return false;
-    }
-    s_frames++;
-    return true;
-  }
-
-  while (!s_gb->gb_frame && *step_budget) {
-    if (pb_cart_paused(s_cart) || s_cart_ram_paused || !prv_ensure_cpu_fetch_window()) {
-      return false;
-    }
-    pb_cart_clear_read_fault(s_cart);
-    s_cart_ram_faulted = false;
-    prv_save_frame_checkpoint();
-    *step_budget -= 1;
+  while (!s_gb->gb_frame) {
     __gb_step_cpu(s_gb);
-    if (pb_cart_read_faulted(s_cart) || pb_cart_paused(s_cart) || s_cart_ram_faulted) {
-      prv_restore_frame_checkpoint();
-      return false;
-    }
   }
-
-  if (!s_gb->gb_frame) {
-    s_frame_budget_hits++;
-    if ((s_frame_budget_hits & 0x1F) == 1) {
-      APP_LOG(APP_LOG_LEVEL_WARNING, "frame step budget hit pc=%04x",
-              (unsigned)s_gb->cpu_reg.pc.reg);
-    }
+  if (s_cart->failed) {
     return false;
   }
-
   s_frames++;
   return true;
 }
@@ -950,43 +811,52 @@ static void prv_frame_timer_cb(void *data) {
   uint64_t now = prv_now_ms();
   uint64_t tick_start_ms = now;
   prv_maybe_request_phone_info(now);
-  prv_maybe_continue_cart_ram();
 
-  if (!s_running && s_cart && s_cart->mode == PB_CART_MODE_PHONE && !pb_cart_paused(s_cart)) {
-    prv_start_from_cart("phone");
-  }
-
-  bool can_run = s_running && s_in_focus && !pb_cart_paused(s_cart) &&
-                 !s_cart_ram_paused;
+  bool can_run = s_running && s_in_focus && !s_cart->failed;
   if (can_run) {
-    uint32_t step_budget = MAX_CPU_STEPS_PER_TICK;
+    uint8_t frames_per_tick = s_fast_forward
+                                  ? FAST_FRAMES_PER_TICK
+                                  : NORMAL_FRAMES_PER_TICK;
     uint8_t completed_frames = 0;
-    for (int i = 0; i < FRAMES_PER_TICK && step_budget; i++) {
+    if (s_fast_forward) {
+      pb_audio_suspend_stream();
+    }
+    for (uint8_t i = 0; i < frames_per_tick; i++) {
+      if (s_fast_forward) {
+        /* Draw the second frame so a watch that cannot complete all four
+         * still presents at the normal 30 FPS. Later frames advance only the
+         * emulated state and are bounded by the normal scheduler quantum. */
+        s_gb->direct.frame_skip = false;
+        s_gb->display.lcd_draw_line = i == 1 ? prv_lcd_draw_line : NULL;
+      }
       uint64_t phase_start_ms = prv_now_ms();
-      if (!prv_run_one_frame(&step_budget)) {
+      if (!prv_run_one_frame()) {
         s_profile.cpu_ms += prv_elapsed_ms(phase_start_ms);
         break;
       }
       s_profile.cpu_ms += prv_elapsed_ms(phase_start_ms);
       completed_frames++;
 
-      // Capture APU state after each emulated frame. Pumping only after both
-      // frames discarded every other 60 Hz register update and made music
-      // transitions sound coarse even when the PCM stream itself was healthy.
-      phase_start_ms = prv_now_ms();
-      pb_audio_pump();
-      s_profile.audio_ms += prv_elapsed_ms(phase_start_ms);
+      if (!s_fast_forward) {
+        // Capture APU state after each emulated frame. Pumping only after both
+        // frames discarded every other 60 Hz register update and made music
+        // transitions sound coarse even when the PCM stream itself was healthy.
+        phase_start_ms = prv_now_ms();
+        pb_audio_pump();
+        s_profile.audio_ms += prv_elapsed_ms(phase_start_ms);
+      } else if (completed_frames >= NORMAL_FRAMES_PER_TICK &&
+                 prv_elapsed_ms(tick_start_ms) >= FRAME_MS) {
+        break;
+      }
     }
+    s_gb->display.lcd_draw_line = prv_lcd_draw_line;
 
-    while (completed_frames < FRAMES_PER_TICK) {
+    while (!s_fast_forward && completed_frames < NORMAL_FRAMES_PER_TICK) {
       uint64_t phase_start_ms = prv_now_ms();
       pb_audio_pump_silence();
       s_profile.audio_ms += prv_elapsed_ms(phase_start_ms);
       completed_frames++;
     }
-    uint64_t phase_start_ms = prv_now_ms();
-    prv_maybe_flush_cart_ram(prv_now_ms());
-    s_profile.save_ms += prv_elapsed_ms(phase_start_ms);
   } else {
     if (s_running && s_in_focus) {
       pb_audio_pump_silence();
@@ -1088,7 +958,17 @@ static PB_SIZE_OPT void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
   }
   pb_video_render(ctx, render_bounds);
 
-  if (!s_running || !s_cart || pb_cart_paused(s_cart) || s_cart_ram_paused) {
+  if (s_running && s_fast_forward) {
+    GRect badge = GRect(bounds.size.w - 30, 2, 28, 20);
+    graphics_context_set_fill_color(ctx, GColorBlack);
+    graphics_fill_rect(ctx, badge, 3, GCornersAll);
+    graphics_context_set_text_color(ctx, GColorWhite);
+    graphics_draw_text(ctx, "2x", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                       badge, GTextOverflowModeTrailingEllipsis,
+                       GTextAlignmentCenter, NULL);
+  }
+
+  if (!s_running || !s_cart || s_cart->failed) {
     graphics_context_set_text_color(ctx, GColorWhite);
     graphics_draw_text(ctx, s_status, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
                        GRect(4, bounds.size.h - 34, bounds.size.w - 8, 30),
@@ -1161,6 +1041,9 @@ static void prv_back_click_handler(ClickRecognizerRef ref, void *context) {
     return;
   }
   pb_input_release_touch();
+  if (pb_input_start_select_toggle((uint32_t)prv_now_ms())) {
+    prv_set_fast_forward(!s_fast_forward);
+  }
   pb_input_press(JOYPAD_SELECT);
   app_timer_register(80, prv_back_release_cb, NULL);
 }
@@ -1225,10 +1108,23 @@ static PB_SIZE_OPT void prv_window_load(Window *window) {
   layer_set_update_proc(s_canvas, prv_canvas_update_proc);
   layer_add_child(window_layer, s_canvas);
 
-  pb_video_init();
+  if (!pb_video_init()) {
+    prv_set_status("No video heap");
+    return;
+  }
   prv_update_canvas_frame();
   pb_input_init();
   pb_audio_init();
+  if (persist_exists(PB_PREF_SCALE)) {
+    int scale = persist_read_int(PB_PREF_SCALE);
+    if (scale >= PB_VIDEO_SCALE_1X && scale <= PB_VIDEO_SCALE_ASPECT_FIT) {
+      pb_video_set_scale((PbVideoScale)scale);
+      prv_update_canvas_frame();
+    }
+  }
+  if (persist_exists(PB_PREF_AUDIO)) {
+    pb_audio_set_enabled(persist_read_int(PB_PREF_AUDIO) != 0);
+  }
   s_in_focus = true;
   app_focus_service_subscribe(prv_focus_handler);
   s_cart = malloc(sizeof(*s_cart));
@@ -1246,6 +1142,10 @@ static PB_SIZE_OPT void prv_window_load(Window *window) {
   s_rom_selected = 0;
   memset(s_rom_titles, 0, sizeof(s_rom_titles));
   s_last_phone_info_request_ms = 0;
+#ifdef PEBBLEBOY_APP_BLOB
+  memset(&s_rom_install, 0, sizeof(s_rom_install));
+#endif
+  s_rtc_active = false;
 
   gb_phone_init(s_cart, prv_phone_event, NULL);
 
@@ -1264,10 +1164,27 @@ static PB_SIZE_OPT void prv_window_load(Window *window) {
   }
 #endif
 
+#ifdef PEBBLEBOY_APP_BLOB
+  if (!started_local) {
+    AppBlobInfo info;
+    if (app_blob_get_info(&info) == S_SUCCESS && pb_cart_init_blob(s_cart, info.size)) {
+      started_local = prv_start_from_cart("flash");
+      if (!started_local) {
+        pb_cart_init_empty(s_cart);
+      }
+    }
+  }
+#endif
+
   if (!started_local) {
     prv_set_status("Loading ROM library");
     gb_phone_request_rom_list();
     s_last_phone_info_request_ms = prv_now_ms();
+#ifdef PEBBLEBOY_APP_BLOB
+  } else if (s_cart->mode == PB_CART_MODE_BLOB) {
+    gb_phone_request_info();
+    s_last_phone_info_request_ms = prv_now_ms();
+#endif
   }
 
 #ifdef PBL_TOUCH
@@ -1290,7 +1207,9 @@ static void prv_window_unload(Window *window) {
   app_focus_service_unsubscribe();
   gb_phone_deinit();
   pb_audio_deinit();
+  pb_video_deinit();
   prv_flush_local_save("shutdown");
+  prv_flush_rtc("shutdown");
   prv_free_save_ram();
   free(s_cart);
   free(s_gb);

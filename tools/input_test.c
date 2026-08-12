@@ -71,10 +71,33 @@ static void test_physical_button_sequence_clears_touch(void) {
   expect(pb_input_joypad() == 0xFF, "physical A release did not restore neutral input");
 }
 
+static void test_start_select_double_chord(void) {
+  pb_input_init();
+  expect(!pb_input_start_select_toggle(100),
+         "Select without Start armed the speed chord");
+
+  pb_input_press(JOYPAD_START);
+  expect(!pb_input_start_select_toggle(200),
+         "first Start+Select chord toggled immediately");
+  pb_input_release(JOYPAD_START);
+  pb_input_press(JOYPAD_START);
+  expect(pb_input_start_select_toggle(1200),
+         "second Start+Select chord at one second did not toggle");
+
+  expect(!pb_input_start_select_toggle(1300),
+         "toggle did not disarm the chord sequence");
+  expect(!pb_input_start_select_toggle(2301),
+         "expired chord incorrectly toggled");
+  expect(pb_input_start_select_toggle(3000),
+         "fresh double chord did not toggle");
+  pb_input_release(JOYPAD_START);
+}
+
 int main(void) {
   test_touch_quadrants();
   test_touch_tie_prefers_vertical();
   test_physical_button_sequence_clears_touch();
+  test_start_select_double_chord();
   printf("input test passed\n");
   return 0;
 }

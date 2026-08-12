@@ -4,10 +4,14 @@
 
 static uint8_t s_buttons = 0xFF;
 static uint8_t s_touch_mask;
+static uint32_t s_first_speed_chord_ms;
+static bool s_speed_chord_armed;
 
 void pb_input_init(void) {
   s_buttons = 0xFF;
   s_touch_mask = 0;
+  s_first_speed_chord_ms = 0;
+  s_speed_chord_armed = false;
 }
 
 void pb_input_press(uint8_t mask) {
@@ -45,3 +49,16 @@ uint8_t pb_input_joypad(void) {
   return s_buttons;
 }
 
+bool pb_input_start_select_toggle(uint32_t now_ms) {
+  if (s_buttons & JOYPAD_START) {
+    return false;
+  }
+  if (s_speed_chord_armed &&
+      (uint32_t)(now_ms - s_first_speed_chord_ms) <= 1000u) {
+    s_speed_chord_armed = false;
+    return true;
+  }
+  s_first_speed_chord_ms = now_ms;
+  s_speed_chord_armed = true;
+  return false;
+}

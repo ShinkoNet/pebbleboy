@@ -10,18 +10,31 @@
 #endif
 
 #define PB_CART_BANK_SIZE 0x4000u
-#ifndef PB_CART_CACHE_BANKS
-#define PB_CART_CACHE_BANKS 3
-#endif
-#define PB_CART_CACHE_BYTES (PB_CART_BANK_SIZE * PB_CART_CACHE_BANKS)
 #ifndef PB_CART_LINE_SIZE
-/* Match the phone ROM data payload size so switch-bank fills need one data message. */
-#define PB_CART_LINE_SIZE 0x0200u
+/* Local flash has low transfer overhead, and a finer-grained cache avoids
+ * retaining cold bytes from the fixed and switched ROM regions. */
+#define PB_CART_LINE_SIZE 0x0080u
 #endif
 #define PB_CART_FILL_SIZE PB_CART_BANK_SIZE
 #define PB_CART_SLOT_SIZE PB_CART_LINE_SIZE
-#define PB_CART_CACHE_SLOTS (PB_CART_CACHE_BYTES / PB_CART_LINE_SIZE)
 #define PB_CART_BANK0_SLOTS (PB_CART_BANK_SIZE / PB_CART_LINE_SIZE)
+#ifdef PB_CART_CACHE_BANKS
+/* Retain full-bank cache configurations for the desktop profiler and the
+ * legacy phone-streaming tests. */
+#define PB_CART_CACHE_BYTES (PB_CART_BANK_SIZE * PB_CART_CACHE_BANKS)
+#define PB_CART_CACHE_SLOTS (PB_CART_CACHE_BYTES / PB_CART_LINE_SIZE)
+#define PB_CART_PINNED_SLOTS PB_CART_BANK0_SLOTS
+#else
+/* Resource and app-blob reads are synchronous. Fixed and switched ROM regions
+ * can therefore share one small LRU instead of permanently pinning the whole
+ * 16 KiB fixed bank. Fifty-six lines keep Crystal's traced flash traffic low
+ * while leaving several kilobytes of safety margin in a stock 128 KiB app. */
+#ifndef PB_CART_CACHE_SLOTS
+#define PB_CART_CACHE_SLOTS 56u
+#endif
+#define PB_CART_CACHE_BYTES (PB_CART_CACHE_SLOTS * PB_CART_LINE_SIZE)
+#define PB_CART_PINNED_SLOTS 0u
+#endif
 #define PB_CART_ACTIVE_BANK_NONE UINT16_MAX
 #define PB_CART_LOOKUP_HINTS 4
 #ifndef PB_CART_TRACK_HITS
@@ -35,6 +48,7 @@
 typedef enum {
   PB_CART_MODE_NONE = 0,
   PB_CART_MODE_RESOURCE,
+  PB_CART_MODE_BLOB,
   PB_CART_MODE_PHONE,
   PB_CART_MODE_MEMORY,
 } PbCartMode;
@@ -97,6 +111,9 @@ void pb_cart_init_empty(PbCart *cart);
 
 #ifndef PB_DESKTOP
 bool pb_cart_init_resource(PbCart *cart, uint32_t resource_id);
+#ifdef PEBBLEBOY_APP_BLOB
+bool pb_cart_init_blob(PbCart *cart, uint32_t rom_size);
+#endif
 #endif
 
 #ifdef PB_DESKTOP

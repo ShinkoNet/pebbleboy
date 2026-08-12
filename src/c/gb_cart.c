@@ -13,6 +13,8 @@ static const char *prv_mode_name(PbCartMode mode) {
   switch (mode) {
     case PB_CART_MODE_RESOURCE:
       return "resource";
+    case PB_CART_MODE_BLOB:
+      return "blob";
     case PB_CART_MODE_PHONE:
       return "phone";
     case PB_CART_MODE_MEMORY:
@@ -39,7 +41,8 @@ static uint32_t prv_slot_start(uint32_t addr) {
 }
 
 static uint32_t prv_fill_unit(const PbCart *cart, uint32_t addr) {
-  if (cart->bank_count <= 2 || addr < PB_CART_BANK_SIZE) {
+  (void)cart;
+  if (PB_CART_PINNED_SLOTS && addr < PB_CART_BANK_SIZE) {
     return PB_CART_BANK_SIZE;
   }
   return PB_CART_LINE_SIZE;
@@ -94,7 +97,7 @@ static void prv_hint_slot(PbCart *cart, uint16_t slot) {
 }
 
 static PbCartSlot *prv_find_slot(PbCart *cart, uint32_t start) {
-  if (start < PB_CART_BANK_SIZE) {
+  if (PB_CART_PINNED_SLOTS && start < PB_CART_BANK_SIZE) {
     uint16_t slot = (uint16_t)(start / PB_CART_LINE_SIZE);
     return cart->slots[slot].start == (int32_t)start ? &cart->slots[slot] : NULL;
   }
@@ -115,7 +118,7 @@ static PbCartSlot *prv_find_slot(PbCart *cart, uint32_t start) {
 }
 
 static const PbCartSlot *prv_find_const_slot(const PbCart *cart, uint32_t start) {
-  if (start < PB_CART_BANK_SIZE) {
+  if (PB_CART_PINNED_SLOTS && start < PB_CART_BANK_SIZE) {
     uint16_t slot = (uint16_t)(start / PB_CART_LINE_SIZE);
     return cart->slots[slot].start == (int32_t)start ? &cart->slots[slot] : NULL;
   }
@@ -153,14 +156,14 @@ static PbCartSlot *prv_select_slot(PbCart *cart, uint32_t start) {
     return existing;
   }
 
-  if (prv_slot_bank(start) == 0) {
+  if (PB_CART_PINNED_SLOTS && prv_slot_bank(start) == 0) {
     uint16_t line = (uint16_t)(start / PB_CART_LINE_SIZE);
     if (line < PB_CART_BANK0_SLOTS) {
       return &cart->slots[line];
     }
   }
 
-  for (int i = (int)PB_CART_BANK0_SLOTS; i < (int)PB_CART_CACHE_SLOTS; i++) {
+  for (int i = (int)PB_CART_PINNED_SLOTS; i < (int)PB_CART_CACHE_SLOTS; i++) {
     if (!cart->slots[i].valid && !cart->slots[i].loading) {
       return &cart->slots[i];
     }
@@ -168,7 +171,7 @@ static PbCartSlot *prv_select_slot(PbCart *cart, uint32_t start) {
 
   int victim = -1;
   int active_victim = -1;
-  for (int i = (int)PB_CART_BANK0_SLOTS; i < (int)PB_CART_CACHE_SLOTS; i++) {
+  for (int i = (int)PB_CART_PINNED_SLOTS; i < (int)PB_CART_CACHE_SLOTS; i++) {
     if (cart->slots[i].loading) {
       continue;
     }
@@ -187,7 +190,7 @@ static PbCartSlot *prv_select_slot(PbCart *cart, uint32_t start) {
     victim = active_victim;
   }
   if (victim < 0) {
-    victim = (int)PB_CART_BANK0_SLOTS;
+    victim = (int)PB_CART_PINNED_SLOTS;
   }
   return &cart->slots[victim];
 }
@@ -233,6 +236,15 @@ static bool prv_load_line_from_source(PbCart *cart, PbCartSlot *slot, uint32_t s
       pb_cart_set_error(cart, "resource read failed");
       return false;
     }
+#ifdef PEBBLEBOY_APP_BLOB
+  } else if (cart->mode == PB_CART_MODE_BLOB) {
+    int loaded = app_blob_read(start, slot->data, size);
+    if (loaded != size) {
+      cart->stats.failed_loads++;
+      pb_cart_set_error(cart, "flash ROM read failed");
+      return false;
+    }
+#endif
   } else
 #endif
   {
@@ -271,7 +283,7 @@ static bool prv_load_fill(PbCart *cart, uint32_t requested_start) {
   (void)offset;
   cart->stats.last_load_bank = bank;
   prv_note_bank(&cart->stats.load_bank_mask, bank);
-  if (cart->mode != PB_CART_MODE_RESOURCE || cart->stats.loads <= 2 ||
+  if (cart->mode == PB_CART_MODE_PHONE || cart->stats.loads <= 2 ||
       (cart->stats.loads & 0x3Fu) == 0) {
     PB_LOG("%s bank %u fill %u loaded size=%u", prv_mode_name(cart->mode),
            (unsigned)bank, (unsigned)offset, (unsigned)fill_size);
@@ -293,6 +305,20 @@ bool pb_cart_init_resource(PbCart *cart, uint32_t resource_id) {
   }
   return prv_load_fill(cart, 0);
 }
+
+#ifdef PEBBLEBOY_APP_BLOB
+bool pb_cart_init_blob(PbCart *cart, uint32_t rom_size) {
+  pb_cart_init_empty(cart);
+  cart->mode = PB_CART_MODE_BLOB;
+  cart->rom_size = rom_size;
+  cart->bank_count = prv_bank_count(rom_size);
+  if (rom_size < 0x150 || cart->bank_count == 0) {
+    pb_cart_set_error(cart, "flash ROM missing");
+    return false;
+  }
+  return prv_load_fill(cart, 0);
+}
+#endif
 #endif
 
 #ifdef PB_DESKTOP

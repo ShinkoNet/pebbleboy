@@ -4,6 +4,8 @@
 import copy
 import os.path
 
+from waflib import Errors
+
 top = '.'
 out = 'build'
 
@@ -13,6 +15,18 @@ LOCAL_ROM_RESOURCE = {
     'name': 'CARTRIDGE',
     'file': 'data/cartridge.gb',
 }
+
+
+def cfw_sdk_platform():
+    path = os.environ.get('PEBBLEBOY_CFW_SDK', '')
+    if not path:
+        return None
+    path = os.path.abspath(path)
+    if not os.path.exists(os.path.join(path, 'include', 'pebble.h')):
+        raise Errors.WafError('PEBBLEBOY_CFW_SDK must name a generated platform SDK directory')
+    if not os.path.exists(os.path.join(path, 'lib', 'libpebble.a')):
+        raise Errors.WafError('PEBBLEBOY_CFW_SDK is missing lib/libpebble.a')
+    return path
 
 
 def embed_local_rom():
@@ -45,10 +59,16 @@ def build(ctx):
     binaries = []
 
     cached_env = ctx.env
+    custom_sdk = cfw_sdk_platform()
     for platform in ctx.env.TARGET_PLATFORMS:
         ctx.env = ctx.all_envs[platform]
+        if custom_sdk:
+            ctx.env.PEBBLE_SDK_PLATFORM = custom_sdk
+            ctx.env.SDK_VERSION_MINOR = 0x6b
+            ctx.env.append_unique('DEFINES', 'PEBBLEBOY_APP_BLOB=1')
         # The emulator's CPU, LCD and mixer loops are throughput-bound. The
-        # SDK defaults to -Os; Time 2 has ample app RAM for speed-oriented code.
+        # SDK defaults to -Os; the 128 KiB target still benefits from selective
+        # speed-oriented compilation while remaining within its app region.
         if '-O3' not in ctx.env.CFLAGS:
             ctx.env.append_value('CFLAGS', '-O3')
         if embed_local_rom():

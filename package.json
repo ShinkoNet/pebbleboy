@@ -26,7 +26,8 @@
       "PB_STATUS",
       "PB_SRAM_SIZE",
       "PB_AUDIO",
-      "PB_SCALE"
+      "PB_SCALE",
+      "PB_CRC32"
     ],
     "targetPlatforms": [
       "emery"

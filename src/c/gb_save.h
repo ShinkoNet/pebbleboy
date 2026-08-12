@@ -16,6 +16,8 @@ typedef int (*PbSaveWriteCb)(uint32_t key, const void *data, size_t size, void *
 typedef struct {
   uint8_t *data;
   size_t size;
+  size_t data_size;
+  size_t window_start;
   uint32_t key_base;
   PbSaveReadCb read_cb;
   PbSaveWriteCb write_cb;
@@ -31,6 +33,10 @@ typedef struct {
 
 bool pb_save_init(PbSave *save, uint8_t *data, size_t size, uint16_t rom_checksum,
                   PbSaveReadCb read_cb, PbSaveWriteCb write_cb, void *store_context);
+bool pb_save_init_window(PbSave *save, uint8_t *data, size_t size, size_t data_size,
+                         uint16_t rom_checksum, PbSaveReadCb read_cb,
+                         PbSaveWriteCb write_cb, void *store_context);
+bool pb_save_select_window(PbSave *save, size_t addr);
 uint8_t pb_save_read(const PbSave *save, size_t addr);
 bool pb_save_write(PbSave *save, size_t addr, uint8_t value);
 uint16_t pb_save_dirty_count(const PbSave *save);

@@ -10,11 +10,14 @@ node tools/check_pkjs_hash.js roms/tetris.gb
 node tools/pkjs_library_test.js
 node tools/pkjs_cache_test.js
 node tools/pkjs_bank_test.js
+node tools/pkjs_install_test.js
 python3 tools/make_sram_probe_rom.py build/sram_probe.gb --value 0x42
 python3 tools/make_mbc_probe_rom.py build/mbc1_probe.gb --mbc mbc1
 python3 tools/make_mbc_probe_rom.py build/mbc3_probe.gb --mbc mbc3
 python3 tools/make_mbc_probe_rom.py build/mbc5_probe.gb --mbc mbc5
 python3 tools/make_mbc_probe_rom.py build/mbc3_all_banks.gb --mbc mbc3 --banks 64
+python3 tools/make_mbc_probe_rom.py build/mbc5_all_banks_8mb.gb --mbc mbc5 --banks 512
+python3 tools/make_mbc_probe_rom.py build/mbc3_rtc_probe.gb --mbc mbc3 --probe rtc
 python3 tools/make_mbc_probe_rom.py build/mbc1_ram_probe.gb --mbc mbc1 --probe ram
 python3 tools/make_mbc_probe_rom.py build/mbc3_ram_probe.gb --mbc mbc3 --probe ram
 python3 tools/make_mbc_probe_rom.py build/mbc5_ram_probe.gb --mbc mbc5 --probe ram
@@ -24,7 +27,7 @@ cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
   src/c/peanut_gb.c src/c/gb_hooks.c src/c/gb_audio.c src/c/gb_cart.c src/c/gb_video.c \
   -o build/desktop_harness
 
-cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
+cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -DPB_CART_CACHE_BANKS=3 -Isrc/c \
   tools/cart_cache_test.c src/c/gb_cart.c \
   -o build/cart_cache_test
 build/cart_cache_test
@@ -54,10 +57,15 @@ cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
   -o build/save_test
 build/save_test
 
+cc -std=c99 -Wall -Wextra -Werror -DPB_DESKTOP -Isrc/c \
+  tools/rtc_test.c src/c/peanut_gb.c src/c/gb_hooks.c src/c/gb_audio.c src/c/gb_cart.c \
+  -o build/rtc_test
+build/rtc_test
+
 tetris_out="$(build/desktop_harness roms/tetris.gb 180)"
 echo "$tetris_out"
 case "$tetris_out" in
-  *'title="TETRIS"'*'mbc=0 banks=2'*'loads=2 '*'load_banks=0,1 request_banks=none'*)
+  *'title="TETRIS"'*'cgb=0 mbc=0 banks=2'*'misses=1111 loads=1112'*'source_bytes=142336'*'load_banks=0,1 request_banks=none'*)
     ;;
   *)
     echo "unexpected Tetris bank profile" >&2
@@ -92,10 +100,32 @@ done
 mbc3_all_banks_out="$(build/desktop_harness build/mbc3_all_banks.gb 20)"
 echo "$mbc3_all_banks_out"
 case "$mbc3_all_banks_out" in
-  *'title="MBC3 ALLBANK"'*'mbc=3 banks=64 save=8192 save0=42 save_nonff=1'*'misses=63 loads=64'*'request_banks=none'*)
+  *'title="MBC3 ALLBANK"'*'mbc=3 banks=64 save=8192 save0=42 save_nonff=1'*'misses=72 loads=73'*'request_banks=none'*)
     ;;
   *)
     echo "unexpected MBC3 64-bank probe profile" >&2
+    exit 1
+    ;;
+esac
+
+mbc5_all_banks_out="$(build/desktop_harness build/mbc5_all_banks_8mb.gb 20)"
+echo "$mbc5_all_banks_out"
+case "$mbc5_all_banks_out" in
+  *'title="MBC5 ALLBANK"'*'mbc=5 banks=512 save=8192 save0=42 save_nonff=1'*'misses=585 loads=586'*'source_bytes=75008'*'request_banks=none'*)
+    ;;
+  *)
+    echo "unexpected MBC5 512-bank probe profile" >&2
+    exit 1
+    ;;
+esac
+
+mbc3_rtc_out="$(build/desktop_harness build/mbc3_rtc_probe.gb 20)"
+echo "$mbc3_rtc_out"
+case "$mbc3_rtc_out" in
+  *'title="MBC3 RTC"'*'mbc=3 banks=4 save=32768 save0=42 save_nonff=1'*)
+    ;;
+  *)
+    echo "unexpected MBC3 RTC latch/access probe profile" >&2
     exit 1
     ;;
 esac
@@ -128,7 +158,7 @@ if [ -f roms/pokered.gb ]; then
   pokered_title_out="$(build/desktop_harness roms/pokered.gb 1500 build/pokered-title.bmp)"
   echo "$pokered_title_out"
   case "$pokered_title_out" in
-    *'title="POKEMON RED"'*'hash=00ec8ed4'*)
+    *'title="POKEMON RED"'*'hash=870c61a7'*)
       ;;
     *)
       echo "unexpected Pokemon title frame hash" >&2
@@ -136,6 +166,33 @@ if [ -f roms/pokered.gb ]; then
       ;;
   esac
   python3 tools/check_pokemon_title.py build/pokered-title.bmp
+fi
+
+crystal_rom='Pokemon - Crystal Version (UE) (V1.1) [C][!].gbc'
+if [ -f "$crystal_rom" ]; then
+  crystal_out="$(build/desktop_harness "$crystal_rom" 900 build/crystal-title.bmp)"
+  echo "$crystal_out"
+  case "$crystal_out" in
+    *'title="PM_CRYSTAL"'*'cgb=1 mbc=3 banks=128 save=32768'*'colors=8 '*)
+      ;;
+    *)
+      echo "unexpected Pokemon Crystal CGB boot profile" >&2
+      exit 1
+      ;;
+  esac
+
+  python3 tools/make_expanded_mbc5_test_rom.py "$crystal_rom" \
+    build/crystal-8mb-mbc5.gbc
+  crystal_8mb_out="$(build/desktop_harness build/crystal-8mb-mbc5.gbc 900)"
+  echo "$crystal_8mb_out"
+  case "$crystal_8mb_out" in
+    *'title="PM_CRYSTAL"'*'cgb=1 mbc=5 banks=512 save=32768'*'colors=8 '*)
+      ;;
+    *)
+      echo "unexpected expanded 8 MiB Pokemon Crystal boot profile" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 pebble build

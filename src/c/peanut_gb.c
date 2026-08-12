@@ -17,7 +17,8 @@ uint8_t prv_core_rom_read(struct gb_s *gb, uint_fast32_t addr);
 
 #define ENABLE_LCD 1
 #define ENABLE_SOUND 1
-#define PEANUT_GB_12_COLOUR 0
+#define PEANUT_GB_12_COLOUR 1
+#define PEANUT_FULL_GBC_SUPPORT 1
 #define PEANUT_GB_HIGH_LCD_ACCURACY 1
 #define PEANUT_GB_USE_INTRINSICS 1
 #define PGB_UNREACHABLE() __builtin_unreachable()
