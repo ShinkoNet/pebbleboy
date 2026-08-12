@@ -60,12 +60,22 @@ def build(ctx):
 
     cached_env = ctx.env
     custom_sdk = cfw_sdk_platform()
+    cfw_build = not embed_local_rom()
     for platform in ctx.env.TARGET_PLATFORMS:
         ctx.env = ctx.all_envs[platform]
         if custom_sdk:
             ctx.env.PEBBLE_SDK_PLATFORM = custom_sdk
+        if cfw_build:
             ctx.env.SDK_VERSION_MINOR = 0x6b
             ctx.env.append_unique('DEFINES', 'PEBBLEBOY_APP_BLOB=1')
+            if not custom_sdk:
+                ctx.env.append_unique('DEFINES', 'PEBBLEBOY_CFW_OFFICIAL_SDK_BRIDGE=1')
+                # CFLAGS precede the SDK's generated include path. This lets
+                # pebble_process_info.h stamp the CFW ABI version while still
+                # delegating every ordinary SDK declaration with include_next.
+                ctx.env.append_value(
+                    'CFLAGS',
+                    '-I{}'.format(ctx.path.find_dir('src/c').abspath()))
         # The emulator's CPU, LCD and mixer loops are throughput-bound. The
         # SDK defaults to -Os; the 128 KiB target still benefits from selective
         # speed-oriented compilation while remaining within its app region.

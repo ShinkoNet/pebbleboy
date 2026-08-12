@@ -33,7 +33,10 @@ the current development build should be treated as the CFW target.
 
 ## Install and configure
 
-The normal `Pebbleboy.pbw` is ROM-free and can be shared without rebuilding it.
+The normal `Pebbleboy.pbw` is the ROM-free CFW build and can be shared without
+rebuilding it. CloudPebble can build it with the official toolchain: Pebbleboy
+includes narrow veneers for the CFW-only app-blob calls and marks the PBW with
+the matching SDK revision. Stock firmware will reject that PBW.
 
 1. Install the CFW PBW and connect the watch to its companion phone.
 2. Open Pebbleboy's settings in the Pebble mobile app.
@@ -118,14 +121,15 @@ With the Pebble SDK active, a normal SDK build remains useful for development:
 pebble build
 ```
 
-That produces a ROM-free build without the CFW blob API. To build the universal
-CFW target, point the build at an SDK generated from the matching firmware:
+That produces the universal CFW target. A local build may instead point at an
+SDK generated from the matching firmware, which avoids the bundled
+official-toolchain veneers:
 
 ```sh
 PEBBLEBOY_CFW_SDK=/path/to/generated-sdk/emery pebble build
 ```
 
-For development only, a ROM can still be embedded at
+For the stock-compatible path, a ROM can be embedded at
 `resources/data/cartridge.gb`:
 
 ```sh

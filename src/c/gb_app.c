@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "gb_audio.h"
+#include "gb_blob.h"
 #include "gb_cart.h"
 #include "gb_core.h"
 #include "gb_input.h"
@@ -969,9 +970,17 @@ static PB_SIZE_OPT void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
   }
 
   if (!s_running || !s_cart || s_cart->failed) {
+    int16_t status_y = bounds.size.h - 34;
+    int16_t status_h = 30;
+    if (scale == PB_VIDEO_SCALE_ASPECT_FIT) {
+      int16_t video_h = (int16_t)((int32_t)bounds.size.w * PB_GB_LCD_H /
+                                  PB_GB_LCD_W);
+      status_y = (bounds.size.h + video_h) / 2;
+      status_h = bounds.size.h - status_y;
+    }
     graphics_context_set_text_color(ctx, GColorWhite);
     graphics_draw_text(ctx, s_status, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(4, bounds.size.h - 34, bounds.size.w - 8, 30),
+                       GRect(4, status_y, bounds.size.w - 8, status_h),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
   }
   s_profile.render_ms += prv_elapsed_ms(render_start_ms);

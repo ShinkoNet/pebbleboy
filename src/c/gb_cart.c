@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "gb_blob.h"
+
 #ifdef PB_DESKTOP
 #define PB_LOG(fmt, ...)
 #else
