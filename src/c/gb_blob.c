@@ -9,9 +9,7 @@
   __attribute__((naked)) return_type name arguments {                         \
     __asm volatile("push {r0, r1, r2, r3}\n"                                \
                    "movw r1, #" #offset "\n"                                \
-                   "ldr r12, =app_message_open\n"                            \
-                   "add.w r12, r12, #6\n"                                    \
-                   "bx r12\n");                                              \
+                   "b.w app_message_open + 6\n");                             \
   }
 
 PB_DEFINE_CFW_VENEER(int32_t, app_blob_begin, (uint32_t size), 2708)

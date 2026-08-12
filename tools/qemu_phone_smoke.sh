@@ -25,7 +25,9 @@ url_path="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.a
 port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
 rom_url="${PB_PHONE_ROM_URL:-http://127.0.0.1:${port}/${url_path}}"
 
-pebble kill || true
+if [ -z "${PB_QEMU_TARGET:-}" ]; then
+  pebble kill || true
+fi
 
 log_pid=
 server_pid=
@@ -49,7 +51,12 @@ fi
 
 python3 tools/seed_phone_rom.py --scale 1x --audio-disabled "$rom_url"
 
-pebble install --emulator emery --vnc --logs build/Pebbleboy.pbw > "$log" 2>&1 &
+if [ -n "${PB_QEMU_TARGET:-}" ]; then
+  install_args=(--qemu "$PB_QEMU_TARGET" --pypkjs --platform emery --logs)
+else
+  install_args=(--emulator emery --vnc --logs)
+fi
+pebble install "${install_args[@]}" build/Pebbleboy.pbw > "$log" 2>&1 &
 log_pid=$!
 
 for _ in $(seq 1 240); do
@@ -105,14 +112,16 @@ if kill -0 "$log_pid" 2>/dev/null; then
   wait "$log_pid" 2>/dev/null || true
 fi
 
-sleep "${PB_QEMU_PHONE_EXTRA_WAIT:-5}"
-python3 tools/qemu_screendump.py "$screenshot"
-python3 tools/check_screenshot.py --allow-loading "$screenshot"
-if [ "${PB_QEMU_PHONE_CHECK_POKEMON_TITLE:-0}" = "1" ]; then
-  python3 tools/check_pokemon_title.py "$screenshot"
+if [ -z "${PB_QEMU_TARGET:-}" ]; then
+  sleep "${PB_QEMU_PHONE_EXTRA_WAIT:-5}"
+  python3 tools/qemu_screendump.py "$screenshot"
+  python3 tools/check_screenshot.py --allow-loading "$screenshot"
+  if [ "${PB_QEMU_PHONE_CHECK_POKEMON_TITLE:-0}" = "1" ]; then
+    python3 tools/check_pokemon_title.py "$screenshot"
+  fi
 fi
 
 cleanup
 trap - EXIT
 
-echo "qemu phone smoke passed: $screenshot"
+echo "qemu flash install smoke passed"
