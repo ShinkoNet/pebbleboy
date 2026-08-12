@@ -17,22 +17,23 @@ LOCAL_ROM_RESOURCE = {
 }
 
 
-def cfw_sdk_platform():
-    path = os.environ.get('PEBBLEBOY_CFW_SDK', '')
-    if not path:
-        return None
-    path = os.path.abspath(path)
-    if not os.path.exists(os.path.join(path, 'include', 'pebble.h')):
-        raise Errors.WafError('PEBBLEBOY_CFW_SDK must name a generated platform SDK directory')
-    if not os.path.exists(os.path.join(path, 'lib', 'libpebble.a')):
-        raise Errors.WafError('PEBBLEBOY_CFW_SDK is missing lib/libpebble.a')
-    return path
-
-
 def embed_local_rom():
     # Release builds are deliberately ROM-free. Developers can opt into the
     # legacy resource-backed path without maintaining a separate manifest.
     return os.environ.get('PEBBLEBOY_EMBED_ROM') == '1' and os.path.exists(LOCAL_ROM_PATH)
+
+
+def build_target(embedded):
+    target = os.environ.get('PEBBLEBOY_BUILD_TARGET', '')
+    if not target:
+        # Preserve the historical command-line behaviour: ordinary builds are
+        # the ROM-free CFW loader, while PEBBLEBOY_EMBED_ROM builds are stock.
+        return 'stock' if embedded else 'cfw'
+    if target not in ('stock', 'cfw'):
+        raise Errors.WafError('PEBBLEBOY_BUILD_TARGET must be stock or cfw')
+    if target == 'stock' and not embedded:
+        raise Errors.WafError('the stock target requires an embedded ROM')
+    return target
 
 
 def options(ctx):
@@ -59,37 +60,40 @@ def build(ctx):
     binaries = []
 
     cached_env = ctx.env
-    custom_sdk = cfw_sdk_platform()
-    cfw_build = not embed_local_rom()
+    embedded = embed_local_rom()
+    target = build_target(embedded)
+    cfw_build = target == 'cfw'
     for platform in ctx.env.TARGET_PLATFORMS:
         ctx.env = ctx.all_envs[platform]
-        if custom_sdk:
-            ctx.env.PEBBLE_SDK_PLATFORM = custom_sdk
         if cfw_build:
             ctx.env.SDK_VERSION_MINOR = 0x6b
-            if not custom_sdk:
-                ctx.env.append_unique('DEFINES', 'PEBBLEBOY_CFW_OFFICIAL_SDK_BRIDGE=1')
-                # CFLAGS precede the SDK's generated include path. This lets
-                # pebble_process_info.h stamp the CFW ABI version while still
-                # delegating every ordinary SDK declaration with include_next.
-                ctx.env.append_value(
-                    'CFLAGS',
-                    '-I{}'.format(ctx.path.find_dir('src/c').abspath()))
-        else:
+            ctx.env.append_unique('DEFINES', 'PEBBLEBOY_CFW_OFFICIAL_SDK_BRIDGE=1')
+            # CFLAGS precede the SDK's generated include path. This lets
+            # pebble_process_info.h stamp the CFW ABI version while still
+            # delegating every ordinary SDK declaration with include_next.
+            ctx.env.append_value(
+                'CFLAGS',
+                '-I{}'.format(ctx.path.find_dir('src/c').abspath()))
+        if embedded:
             # Suppress the source-level ROM-free default for personal PBWs
-            # that carry an immutable cartridge resource.
+            # that carry an immutable cartridge resource. This is independent
+            # of whether the personal build targets stock firmware or CFW.
             ctx.env.append_unique('DEFINES', 'PEBBLEBOY_EMBEDDED_ROM_BUILD=1')
+        if target == 'stock':
+            ctx.env.append_unique('DEFINES', 'PEBBLEBOY_STOCK_BUILD=1')
+            ctx.env.append_unique('DEFINES', 'PEBBLEBOY_NO_AUDIO=1')
         # The emulator's CPU, LCD and mixer loops are throughput-bound. The
         # SDK defaults to -Os; the 128 KiB target still benefits from selective
         # speed-oriented compilation while remaining within its app region.
         if '-O3' not in ctx.env.CFLAGS:
             ctx.env.append_value('CFLAGS', '-O3')
-        if embed_local_rom():
+        if embedded:
             # App resources live in Obelix's large PFS. The stock 1 MiB SDK
-            # ceiling is a build-time limit; leave enough room for a maximum
-            # 4 MiB Game Boy ROM plus the fixed pbpack table.
+            # ceiling is a build-time limit. Stock personal builds support a
+            # standard 4 MiB cartridge; CFW personal builds also support the
+            # 8 MiB MBC5-expanded cartridge format.
             ctx.env.PLATFORM = dict(ctx.env.PLATFORM)
-            ctx.env.PLATFORM['MAX_RESOURCES_SIZE'] = 0x410000
+            ctx.env.PLATFORM['MAX_RESOURCES_SIZE'] = (0x810000 if cfw_build else 0x410000)
         ctx.set_group(ctx.env.PLATFORM_NAME)
         app_elf = '{}/pebble-app.elf'.format(ctx.env.BUILD_DIR)
         ctx.pbl_build(source=ctx.path.ant_glob('src/c/**/*.c'), target=app_elf, bin_type='app')

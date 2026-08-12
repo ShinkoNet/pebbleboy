@@ -467,13 +467,6 @@ function sendSramLoad(bank, requestSize) {
 }
 
 function bytesFromFetchText(text) {
-  var marker = 'PEBBLEBOY_ROM_BASE64';
-  if (text.indexOf(marker) === 0) {
-    var markerEnd = text.indexOf('\n', marker.length);
-    if (markerEnd >= 0) {
-      return base64ToBytes(text.slice(markerEnd + 1));
-    }
-  }
   var clean = String(text).replace(/\s+/g, '');
   if (clean.length >= 4 && clean.length % 4 === 0 &&
       /^[A-Za-z0-9+/]+={0,2}$/.test(clean)) {

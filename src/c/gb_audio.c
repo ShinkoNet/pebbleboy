@@ -264,7 +264,7 @@ void pb_audio_init(void) {
   s_enabled = false;
 }
 
-#ifndef PB_DESKTOP
+#if !defined(PB_DESKTOP) && !defined(PEBBLEBOY_NO_AUDIO)
 static bool prv_open_stream(void) {
   if (s_enabled) {
     return true;
@@ -296,6 +296,10 @@ static void prv_close_stream(const char *reason) {
 #endif
 
 void pb_audio_set_enabled(bool enabled) {
+#ifdef PEBBLEBOY_NO_AUDIO
+  (void)enabled;
+  s_requested = false;
+#else
   s_requested = enabled;
 #ifndef PB_DESKTOP
   if (!enabled) {
@@ -306,10 +310,13 @@ void pb_audio_set_enabled(bool enabled) {
 #else
   s_enabled = enabled;
 #endif
+#endif
 }
 
 void pb_audio_suspend_stream(void) {
-#ifndef PB_DESKTOP
+#if defined(PEBBLEBOY_NO_AUDIO)
+  s_enabled = false;
+#elif !defined(PB_DESKTOP)
   prv_close_stream(NULL);
 #else
   (void)s_enabled;
@@ -324,7 +331,7 @@ static void prv_write_buffer(void) {
     return;
   }
 
-#ifndef PB_DESKTOP
+#if !defined(PB_DESKTOP) && !defined(PEBBLEBOY_NO_AUDIO)
   uint32_t written = speaker_stream_write(
       (const uint8_t *)s_buffer + s_pending_offset, remaining);
 #else
@@ -334,7 +341,7 @@ static void prv_write_buffer(void) {
   s_pending_offset = (uint16_t)(s_pending_offset + written);
   if (written < remaining) {
     s_stats.partial_writes++;
-#ifndef PB_DESKTOP
+#if !defined(PB_DESKTOP) && !defined(PEBBLEBOY_NO_AUDIO)
     if ((s_stats.partial_writes & 0xFFu) == 1) {
       APP_LOG(APP_LOG_LEVEL_WARNING, "speaker partial write %lu/%u partials=%lu",
               written, (unsigned)remaining,
@@ -342,7 +349,7 @@ static void prv_write_buffer(void) {
     }
 #endif
   }
-#ifndef PB_DESKTOP
+#if !defined(PB_DESKTOP) && !defined(PEBBLEBOY_NO_AUDIO)
   if ((s_stats.pumps & 0x1FFu) == 1) {
     APP_LOG(APP_LOG_LEVEL_INFO, "audio pumps=%lu partial=%lu errors=%lu last_write=%lu",
             s_stats.pumps, s_stats.partial_writes, s_stats.stream_errors,
@@ -356,6 +363,9 @@ static void prv_write_buffer(void) {
 }
 
 static bool prv_prepare_stream(void) {
+#ifdef PEBBLEBOY_NO_AUDIO
+  return false;
+#else
   if (!s_requested) {
     return false;
   }
@@ -366,6 +376,7 @@ static bool prv_prepare_stream(void) {
   }
 #endif
   return true;
+#endif
 }
 
 static void prv_record_mix_stats(uint16_t nonzero, uint16_t peak) {
@@ -428,7 +439,7 @@ void pb_audio_pump_silence(void) {
 
 void pb_audio_deinit(void) {
   s_requested = false;
-#ifndef PB_DESKTOP
+#if !defined(PB_DESKTOP) && !defined(PEBBLEBOY_NO_AUDIO)
   prv_close_stream(NULL);
 #endif
   s_enabled = false;

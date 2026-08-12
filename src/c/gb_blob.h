@@ -11,8 +11,8 @@
  * the normal Pebbleboy target: select the blob path in source and synthesize
  * the seven CFW veneers when the SDK does not already declare that API.
  *
- * The per-ROM stock builder explicitly defines PEBBLEBOY_EMBEDDED_ROM_BUILD
- * and uses an ordinary immutable resource instead. */
+ * A per-ROM builder explicitly defines PEBBLEBOY_EMBEDDED_ROM_BUILD and uses
+ * an ordinary immutable resource instead, for either its stock or CFW target. */
 #ifndef PEBBLEBOY_EMBEDDED_ROM_BUILD
 #ifndef PEBBLEBOY_APP_BLOB
 #define PEBBLEBOY_APP_BLOB 1

@@ -26,17 +26,26 @@
 #define PB_CART_PINNED_SLOTS PB_CART_BANK0_SLOTS
 #else
 /* Resource and app-blob reads are synchronous. Fixed and switched ROM regions
- * can therefore share one small LRU instead of permanently pinning the whole
- * 16 KiB fixed bank. Fifty-six lines keep Crystal's traced flash traffic low
- * while leaving several kilobytes of safety margin in a stock 128 KiB app. */
+ * can therefore share one LRU instead of permanently pinning the whole 16 KiB
+ * fixed bank. CFW builds target Pebbleboy's extended Obelix app heap, whether
+ * the ROM comes from an app blob or an embedded resource; stock personal
+ * builds retain the smaller cache. */
 #ifndef PB_CART_CACHE_SLOTS
+#ifdef PEBBLEBOY_STOCK_BUILD
 #define PB_CART_CACHE_SLOTS 56u
+#else
+/* Crystal's moving overworld exceeds 128 resident lines. 192 lines retain a
+ * 24 KiB working set while leaving roughly 14 KiB of live heap on the extended
+ * Obelix app region for display, audio, AppMessage, and save-state buffers. */
+#define PB_CART_CACHE_SLOTS 192u
+#endif
 #endif
 #define PB_CART_CACHE_BYTES (PB_CART_CACHE_SLOTS * PB_CART_LINE_SIZE)
 #define PB_CART_PINNED_SLOTS 0u
 #endif
 #define PB_CART_ACTIVE_BANK_NONE UINT16_MAX
-#define PB_CART_LOOKUP_HINTS 4
+#define PB_CART_SLOT_NONE UINT16_MAX
+#define PB_CART_HASH_BUCKETS (PB_CART_CACHE_SLOTS * 2u)
 #ifndef PB_CART_TRACK_HITS
 #ifdef PB_DESKTOP
 #define PB_CART_TRACK_HITS 1
@@ -77,7 +86,9 @@ typedef struct {
   bool loading;
   uint16_t size;
   uint16_t received;
-  uint32_t last_used;
+  uint16_t hash_next;
+  uint16_t lru_prev;
+  uint16_t lru_next;
   uint8_t data[PB_CART_SLOT_SIZE];
 } PbCartSlot;
 
@@ -95,9 +106,10 @@ typedef struct {
   PbCartBankRequestCb request_cb;
   void *request_context;
   PbCartSlot slots[PB_CART_CACHE_SLOTS];
-  uint16_t lookup_hints[PB_CART_LOOKUP_HINTS];
+  uint16_t hash_buckets[PB_CART_HASH_BUCKETS];
   PbCartStats stats;
-  uint32_t tick;
+  uint16_t lru_head;
+  uint16_t lru_tail;
   uint16_t last_read_slot;
 #ifndef PB_DESKTOP
   ResHandle resource;
@@ -125,7 +137,7 @@ bool pb_cart_init_phone(PbCart *cart, uint32_t rom_size, PbCartBankRequestCb req
 
 uint8_t pb_cart_read_slow(PbCart *cart, uint32_t addr);
 
-/* CPU instruction fetches normally stay within one 512-byte cache line for
+/* CPU instruction fetches normally stay within one cache line for
  * hundreds of reads. Keep that overwhelmingly common path inline so the core
  * avoids another function call and a cache search for every ROM byte. */
 static inline uint8_t pb_cart_read(PbCart *cart, uint32_t addr) {

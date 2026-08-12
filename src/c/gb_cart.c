@@ -82,20 +82,78 @@ static uint16_t prv_slot_bank_offset(uint32_t start) {
   return (uint16_t)(start & (PB_CART_BANK_SIZE - 1u));
 }
 
-static void prv_hint_slot(PbCart *cart, uint16_t slot) {
-  for (int i = 0; i < PB_CART_LOOKUP_HINTS; i++) {
-    if (cart->lookup_hints[i] == slot) {
-      for (; i > 0; i--) {
-        cart->lookup_hints[i] = cart->lookup_hints[i - 1];
+static uint16_t prv_hash_bucket(uint32_t start) {
+  uint32_t line = start / PB_CART_LINE_SIZE;
+  line ^= line >> 16;
+  line *= 0x45D9F3Bu;
+  line ^= line >> 16;
+  return (uint16_t)(line % PB_CART_HASH_BUCKETS);
+}
+
+static void prv_index_remove(PbCart *cart, uint16_t slot_index) {
+  PbCartSlot *slot = &cart->slots[slot_index];
+  if (slot->start < 0) {
+    return;
+  }
+
+  uint16_t bucket = prv_hash_bucket((uint32_t)slot->start);
+  uint16_t current = cart->hash_buckets[bucket];
+  uint16_t previous = PB_CART_SLOT_NONE;
+  while (current != PB_CART_SLOT_NONE) {
+    if (current == slot_index) {
+      if (previous == PB_CART_SLOT_NONE) {
+        cart->hash_buckets[bucket] = slot->hash_next;
+      } else {
+        cart->slots[previous].hash_next = slot->hash_next;
       }
-      cart->lookup_hints[0] = slot;
-      return;
+      break;
     }
+    previous = current;
+    current = cart->slots[current].hash_next;
   }
-  for (int i = PB_CART_LOOKUP_HINTS - 1; i > 0; i--) {
-    cart->lookup_hints[i] = cart->lookup_hints[i - 1];
+  slot->hash_next = PB_CART_SLOT_NONE;
+}
+
+static void prv_index_add(PbCart *cart, uint16_t slot_index) {
+  PbCartSlot *slot = &cart->slots[slot_index];
+  uint16_t bucket = prv_hash_bucket((uint32_t)slot->start);
+  slot->hash_next = cart->hash_buckets[bucket];
+  cart->hash_buckets[bucket] = slot_index;
+}
+
+static void prv_lru_remove(PbCart *cart, uint16_t slot_index) {
+  PbCartSlot *slot = &cart->slots[slot_index];
+  bool linked = cart->lru_head == slot_index || slot->lru_prev != PB_CART_SLOT_NONE ||
+                slot->lru_next != PB_CART_SLOT_NONE;
+  if (!linked) {
+    return;
   }
-  cart->lookup_hints[0] = slot;
+
+  if (slot->lru_prev != PB_CART_SLOT_NONE) {
+    cart->slots[slot->lru_prev].lru_next = slot->lru_next;
+  } else {
+    cart->lru_head = slot->lru_next;
+  }
+  if (slot->lru_next != PB_CART_SLOT_NONE) {
+    cart->slots[slot->lru_next].lru_prev = slot->lru_prev;
+  } else {
+    cart->lru_tail = slot->lru_prev;
+  }
+  slot->lru_prev = PB_CART_SLOT_NONE;
+  slot->lru_next = PB_CART_SLOT_NONE;
+}
+
+static void prv_lru_touch(PbCart *cart, uint16_t slot_index) {
+  PbCartSlot *slot = &cart->slots[slot_index];
+  prv_lru_remove(cart, slot_index);
+  slot->lru_prev = PB_CART_SLOT_NONE;
+  slot->lru_next = cart->lru_head;
+  if (cart->lru_head != PB_CART_SLOT_NONE) {
+    cart->slots[cart->lru_head].lru_prev = slot_index;
+  } else {
+    cart->lru_tail = slot_index;
+  }
+  cart->lru_head = slot_index;
 }
 
 static PbCartSlot *prv_find_slot(PbCart *cart, uint32_t start) {
@@ -103,18 +161,12 @@ static PbCartSlot *prv_find_slot(PbCart *cart, uint32_t start) {
     uint16_t slot = (uint16_t)(start / PB_CART_LINE_SIZE);
     return cart->slots[slot].start == (int32_t)start ? &cart->slots[slot] : NULL;
   }
-  for (int i = 0; i < PB_CART_LOOKUP_HINTS; i++) {
-    uint16_t slot = cart->lookup_hints[i];
-    if (slot < PB_CART_CACHE_SLOTS && cart->slots[slot].start == (int32_t)start) {
-      prv_hint_slot(cart, slot);
+  uint16_t slot = cart->hash_buckets[prv_hash_bucket(start)];
+  while (slot != PB_CART_SLOT_NONE) {
+    if (cart->slots[slot].start == (int32_t)start) {
       return &cart->slots[slot];
     }
-  }
-  for (int i = 0; i < (int)PB_CART_CACHE_SLOTS; i++) {
-    if (cart->slots[i].start == (int32_t)start) {
-      prv_hint_slot(cart, (uint16_t)i);
-      return &cart->slots[i];
-    }
+    slot = cart->slots[slot].hash_next;
   }
   return NULL;
 }
@@ -124,16 +176,12 @@ static const PbCartSlot *prv_find_const_slot(const PbCart *cart, uint32_t start)
     uint16_t slot = (uint16_t)(start / PB_CART_LINE_SIZE);
     return cart->slots[slot].start == (int32_t)start ? &cart->slots[slot] : NULL;
   }
-  for (int i = 0; i < PB_CART_LOOKUP_HINTS; i++) {
-    uint16_t slot = cart->lookup_hints[i];
-    if (slot < PB_CART_CACHE_SLOTS && cart->slots[slot].start == (int32_t)start) {
+  uint16_t slot = cart->hash_buckets[prv_hash_bucket(start)];
+  while (slot != PB_CART_SLOT_NONE) {
+    if (cart->slots[slot].start == (int32_t)start) {
       return &cart->slots[slot];
     }
-  }
-  for (int i = 0; i < (int)PB_CART_CACHE_SLOTS; i++) {
-    if (cart->slots[i].start == (int32_t)start) {
-      return &cart->slots[i];
-    }
+    slot = cart->slots[slot].hash_next;
   }
   return NULL;
 }
@@ -171,39 +219,54 @@ static PbCartSlot *prv_select_slot(PbCart *cart, uint32_t start) {
     }
   }
 
-  int victim = -1;
-  int active_victim = -1;
-  for (int i = (int)PB_CART_PINNED_SLOTS; i < (int)PB_CART_CACHE_SLOTS; i++) {
-    if (cart->slots[i].loading) {
+  uint16_t victim = PB_CART_SLOT_NONE;
+  uint16_t active_victim = PB_CART_SLOT_NONE;
+  uint16_t current = cart->lru_tail;
+  while (current != PB_CART_SLOT_NONE) {
+    PbCartSlot *slot = &cart->slots[current];
+    if (slot->loading) {
+      current = slot->lru_prev;
       continue;
     }
-    if (prv_slot_is_active_bank(cart, &cart->slots[i])) {
-      if (active_victim < 0 ||
-          cart->slots[i].last_used < cart->slots[active_victim].last_used) {
-        active_victim = i;
+#if PB_CART_PINNED_SLOTS > 0
+    if (current < PB_CART_PINNED_SLOTS) {
+      current = slot->lru_prev;
+      continue;
+    }
+#endif
+    /* Full-bank configurations can afford to preserve the selected bank as a
+     * unit.  In the compact line cache, protecting every selected-bank line
+     * starves fixed-bank code and defeats temporal LRU locality. */
+    if (PB_CART_PINNED_SLOTS && prv_slot_is_active_bank(cart, slot)) {
+      if (active_victim == PB_CART_SLOT_NONE) {
+        active_victim = current;
       }
+      current = slot->lru_prev;
       continue;
     }
-    if (victim < 0 || cart->slots[i].last_used < cart->slots[victim].last_used) {
-      victim = i;
-    }
+    victim = current;
+    break;
   }
-  if (victim < 0) {
+  if (victim == PB_CART_SLOT_NONE) {
     victim = active_victim;
   }
-  if (victim < 0) {
-    victim = (int)PB_CART_PINNED_SLOTS;
+  if (victim == PB_CART_SLOT_NONE) {
+    victim = (uint16_t)PB_CART_PINNED_SLOTS;
   }
   return &cart->slots[victim];
 }
 
-static void prv_prepare_slot(PbCartSlot *slot, uint32_t start, uint16_t size) {
+static void prv_prepare_slot(PbCart *cart, PbCartSlot *slot, uint32_t start, uint16_t size) {
+  uint16_t slot_index = (uint16_t)(slot - cart->slots);
+  prv_index_remove(cart, slot_index);
+  prv_lru_remove(cart, slot_index);
   slot->start = (int32_t)start;
   slot->valid = false;
   slot->loading = false;
   slot->size = size;
   slot->received = 0;
   memset(slot->data, 0xFF, PB_CART_SLOT_SIZE);
+  prv_index_add(cart, slot_index);
 }
 
 void pb_cart_init_empty(PbCart *cart) {
@@ -212,18 +275,23 @@ void pb_cart_init_empty(PbCart *cart) {
   cart->pending_start = UINT32_MAX;
   cart->read_fault_start = UINT32_MAX;
   cart->active_bank = PB_CART_ACTIVE_BANK_NONE;
+  cart->lru_head = PB_CART_SLOT_NONE;
+  cart->lru_tail = PB_CART_SLOT_NONE;
   cart->last_read_slot = UINT16_MAX;
   for (int i = 0; i < (int)PB_CART_CACHE_SLOTS; i++) {
     cart->slots[i].start = -1;
+    cart->slots[i].hash_next = PB_CART_SLOT_NONE;
+    cart->slots[i].lru_prev = PB_CART_SLOT_NONE;
+    cart->slots[i].lru_next = PB_CART_SLOT_NONE;
   }
-  for (int i = 0; i < PB_CART_LOOKUP_HINTS; i++) {
-    cart->lookup_hints[i] = UINT16_MAX;
+  for (int i = 0; i < (int)PB_CART_HASH_BUCKETS; i++) {
+    cart->hash_buckets[i] = PB_CART_SLOT_NONE;
   }
 }
 
 static bool prv_load_line_from_source(PbCart *cart, PbCartSlot *slot, uint32_t start) {
   uint16_t size = prv_slot_size(cart, start);
-  prv_prepare_slot(slot, start, size);
+  prv_prepare_slot(cart, slot, start, size);
 
 #ifdef PB_DESKTOP
   if (cart->mode == PB_CART_MODE_MEMORY) {
@@ -257,7 +325,7 @@ static bool prv_load_line_from_source(PbCart *cart, PbCartSlot *slot, uint32_t s
   slot->valid = true;
   slot->loading = false;
   slot->received = size;
-  slot->last_used = ++cart->tick;
+  prv_lru_touch(cart, (uint16_t)(slot - cart->slots));
   cart->stats.source_reads++;
   cart->stats.source_bytes += size;
   return true;
@@ -285,8 +353,7 @@ static bool prv_load_fill(PbCart *cart, uint32_t requested_start) {
   (void)offset;
   cart->stats.last_load_bank = bank;
   prv_note_bank(&cart->stats.load_bank_mask, bank);
-  if (cart->mode == PB_CART_MODE_PHONE || cart->stats.loads <= 2 ||
-      (cart->stats.loads & 0x3Fu) == 0) {
+  if (cart->mode == PB_CART_MODE_PHONE || cart->stats.loads <= 2) {
     PB_LOG("%s bank %u fill %u loaded size=%u", prv_mode_name(cart->mode),
            (unsigned)bank, (unsigned)offset, (unsigned)fill_size);
   }
@@ -358,9 +425,9 @@ static void prv_prepare_loading_fill(PbCart *cart, uint32_t start, uint16_t fill
   uint32_t end = start + fill_size;
   for (uint32_t line_start = start; line_start < end; line_start += PB_CART_LINE_SIZE) {
     PbCartSlot *slot = prv_select_slot(cart, line_start);
-    prv_prepare_slot(slot, line_start, prv_slot_size(cart, line_start));
+    prv_prepare_slot(cart, slot, line_start, prv_slot_size(cart, line_start));
     slot->loading = true;
-    slot->last_used = ++cart->tick;
+    prv_lru_touch(cart, (uint16_t)(slot - cart->slots));
   }
 }
 
@@ -471,7 +538,7 @@ uint8_t pb_cart_read_slow(PbCart *cart, uint32_t addr) {
   }
   uint16_t slot_index = (uint16_t)(slot - cart->slots);
   if (slot_index != cart->last_read_slot) {
-    slot->last_used = ++cart->tick;
+    prv_lru_touch(cart, slot_index);
     cart->last_read_slot = slot_index;
   }
 #if PB_CART_TRACK_HITS
@@ -569,7 +636,7 @@ bool pb_cart_phone_data(PbCart *cart, uint16_t bank, uint16_t offset, const uint
     if (end > slot->received) {
       slot->received = end;
     }
-    slot->last_used = ++cart->tick;
+    prv_lru_touch(cart, (uint16_t)(slot - cart->slots));
     copied += chunk;
   }
   return true;
@@ -594,7 +661,7 @@ bool pb_cart_phone_end(PbCart *cart, uint16_t bank, uint16_t offset, uint16_t si
     PbCartSlot *slot = prv_find_slot(cart, line_start);
     slot->valid = true;
     slot->loading = false;
-    slot->last_used = ++cart->tick;
+    prv_lru_touch(cart, (uint16_t)(slot - cart->slots));
   }
   cart->stats.loads++;
   cart->stats.last_load_bank = bank;

@@ -188,15 +188,11 @@ static bool prv_select_local_save_addr(size_t addr) {
     return true;
   }
 
-  uint64_t started_ms = prv_now_ms();
   if (!pb_save_select_window(&s_local_save, addr)) {
     prv_set_status("SRAM window failed");
     return false;
   }
   s_cart_ram_dirty = false;
-  APP_LOG(APP_LOG_LEVEL_DEBUG, "local SRAM window=%lu elapsed=%lu",
-          (unsigned long)s_local_save.window_start,
-          (unsigned long)prv_elapsed_ms(started_ms));
   return true;
 }
 
@@ -476,8 +472,10 @@ static bool prv_start_from_cart(const char *source_name) {
   char title[17];
   gb_get_rom_name(s_gb, title);
   snprintf(s_status, sizeof(s_status), "%s %s", title[0] ? title : "DMG ROM", source_name);
-  APP_LOG(APP_LOG_LEVEL_INFO, "started %s, save=%u, heap free=%u used=%u",
-          s_status, (unsigned)s_cart_ram_size, (unsigned)heap_bytes_free(),
+  APP_LOG(APP_LOG_LEVEL_INFO,
+          "started %s, save=%u, cache=%ux%u, heap free=%u used=%u",
+          s_status, (unsigned)s_cart_ram_size, (unsigned)PB_CART_CACHE_SLOTS,
+          (unsigned)PB_CART_LINE_SIZE, (unsigned)heap_bytes_free(),
           (unsigned)heap_bytes_used());
   s_frames = 0;
   s_last_log_frame = 0;
