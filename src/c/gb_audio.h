@@ -5,9 +5,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// One half of the app's 33 ms/two-frame scheduling quantum at the native
-// Obelix speaker format. The app pumps once after each emulated GB frame.
-#define PB_AUDIO_PUMP_SAMPLES 264u
+// Maximum samples in one 60 Hz scheduling quantum at 16 kHz. The mixer
+// alternates 266/267-sample buffers to produce exactly 16,000 samples/second.
+#define PB_AUDIO_PUMP_SAMPLES 267u
 
 void pb_audio_init(void);
 void pb_audio_set_enabled(bool enabled);

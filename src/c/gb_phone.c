@@ -12,7 +12,6 @@ extern uint32_t MESSAGE_KEY_PB_DATA;
 extern uint32_t MESSAGE_KEY_PB_TITLE;
 extern uint32_t MESSAGE_KEY_PB_CART_TYPE;
 extern uint32_t MESSAGE_KEY_PB_STATUS;
-extern uint32_t MESSAGE_KEY_PB_SRAM_SIZE;
 extern uint32_t MESSAGE_KEY_PB_CRC32;
 
 #define INSTALL_REPLY_MAX_RETRIES 5u
@@ -241,7 +240,9 @@ void gb_phone_init(PbCart *cart, PbPhoneEventCb event_cb, void *context) {
   app_message_register_inbox_received(prv_inbox_received);
   app_message_register_outbox_sent(prv_outbox_sent);
   app_message_register_outbox_failed(prv_outbox_failed);
-  app_message_open(1024, 1024);
+  /* A ROM data message contains 512 bytes plus command and offset tuples.
+   * Outbound acknowledgements contain only a command and optional offset. */
+  app_message_open(600, 64);
 }
 
 void gb_phone_deinit(void) {

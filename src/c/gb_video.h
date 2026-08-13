@@ -10,8 +10,6 @@
 
 #define PB_GB_LCD_W 160
 #define PB_GB_LCD_H 144
-#define PB_GB_FRAME_BYTES ((PB_GB_LCD_W * PB_GB_LCD_H * 3) / 4)
-
 typedef enum {
   PB_VIDEO_SCALE_1X = 0,
   PB_VIDEO_SCALE_FULLSCREEN,
@@ -23,16 +21,15 @@ void pb_video_deinit(void);
 void pb_video_clear(uint8_t shade);
 void pb_video_draw_line(const uint8_t *pixels, uint8_t y);
 void pb_video_draw_line_cgb(const uint8_t *pixels, const uint16_t *palette, uint8_t y);
-/* Returns Pebble's six RGB bits without the two opaque-alpha bits. */
-uint8_t pb_video_get_pixel(uint8_t x, uint8_t y);
-const uint8_t *pb_video_framebuffer(void);
-uint32_t pb_video_hash(void);
-bool pb_video_take_changed(void);
 void pb_video_set_scale(PbVideoScale scale);
 PbVideoScale pb_video_scale(void);
 
 #ifndef PB_DESKTOP
-void pb_video_render(GContext *ctx, GRect bounds);
+/* Capture Pebble's native framebuffer while the emulator produces its visible
+ * frame. Scanline callbacks write directly into it, avoiding a 17 KiB shadow
+ * framebuffer in the app heap. */
+bool pb_video_begin_frame(GContext *ctx, GRect bounds);
+void pb_video_end_frame(GContext *ctx);
 #endif
 
 #endif

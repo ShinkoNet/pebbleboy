@@ -12,7 +12,7 @@
  * the seven CFW veneers when the SDK does not already declare that API.
  *
  * A per-ROM builder explicitly defines PEBBLEBOY_EMBEDDED_ROM_BUILD and uses
- * an ordinary immutable resource instead, for either its stock or CFW target. */
+ * an ordinary immutable resource instead. */
 #ifndef PEBBLEBOY_EMBEDDED_ROM_BUILD
 #ifndef PEBBLEBOY_APP_BLOB
 #define PEBBLEBOY_APP_BLOB 1

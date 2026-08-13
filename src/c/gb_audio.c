@@ -2,6 +2,10 @@
 
 #include <string.h>
 
+#if defined(__GNUC__)
+#pragma GCC optimize("O3")
+#endif
+
 #ifndef PB_DESKTOP
 #include <pebble.h>
 #endif
@@ -10,6 +14,9 @@
 #define AUDIO_REG_COUNT 0x30u
 #define AUDIO_SAMPLE_RATE 16000u
 #define AUDIO_PUMP_SAMPLES PB_AUDIO_PUMP_SAMPLES
+#define AUDIO_PUMP_RATE 60u
+#define AUDIO_PUMP_BASE_SAMPLES (AUDIO_SAMPLE_RATE / AUDIO_PUMP_RATE)
+#define AUDIO_PUMP_REMAINDER (AUDIO_SAMPLE_RATE % AUDIO_PUMP_RATE)
 #define AUDIO_PHASE_ONE 65536u
 #define AUDIO_WAVE_PHASE_ONE (32u * AUDIO_PHASE_ONE)
 #define AUDIO_ENV_TICK_SAMPLES (AUDIO_SAMPLE_RATE / 64u)
@@ -50,6 +57,7 @@ static NoiseChannel s_noise;
 static PbAudioStats s_stats;
 static uint16_t s_pending_offset;
 static uint16_t s_pending_size;
+static uint8_t s_sample_remainder;
 static bool s_master_enabled;
 static uint8_t s_route_mask;
 static uint8_t s_channel_gain[4];
@@ -255,6 +263,7 @@ void pb_audio_init(void) {
   memset(&s_stats, 0, sizeof(s_stats));
   s_pending_offset = 0;
   s_pending_size = 0;
+  s_sample_remainder = 0;
   s_master_enabled = false;
   s_route_mask = 0;
   memset(s_channel_gain, 0, sizeof(s_channel_gain));
@@ -402,9 +411,16 @@ void pb_audio_pump(void) {
     return;
   }
 
+  uint16_t sample_count = AUDIO_PUMP_BASE_SAMPLES;
+  s_sample_remainder = (uint8_t)(s_sample_remainder + AUDIO_PUMP_REMAINDER);
+  if (s_sample_remainder >= AUDIO_PUMP_RATE) {
+    sample_count++;
+    s_sample_remainder = (uint8_t)(s_sample_remainder - AUDIO_PUMP_RATE);
+  }
+
   uint16_t nonzero = 0;
   uint16_t peak = 0;
-  for (uint16_t i = 0; i < AUDIO_PUMP_SAMPLES; i++) {
+  for (uint16_t i = 0; i < sample_count; i++) {
     int16_t sample = prv_mix_sample();
     s_buffer[i] = sample;
     int32_t magnitude = sample;
@@ -417,7 +433,7 @@ void pb_audio_pump(void) {
     }
   }
   prv_record_mix_stats(nonzero, peak);
-  s_pending_size = sizeof(s_buffer);
+  s_pending_size = (uint16_t)(sample_count * sizeof(s_buffer[0]));
   prv_write_buffer();
 }
 
@@ -431,9 +447,15 @@ void pb_audio_pump_silence(void) {
     return;
   }
 
-  memset(s_buffer, 0, sizeof(s_buffer));
+  uint16_t sample_count = AUDIO_PUMP_BASE_SAMPLES;
+  s_sample_remainder = (uint8_t)(s_sample_remainder + AUDIO_PUMP_REMAINDER);
+  if (s_sample_remainder >= AUDIO_PUMP_RATE) {
+    sample_count++;
+    s_sample_remainder = (uint8_t)(s_sample_remainder - AUDIO_PUMP_RATE);
+  }
+  memset(s_buffer, 0, sample_count * sizeof(s_buffer[0]));
   prv_record_mix_stats(0, 0);
-  s_pending_size = sizeof(s_buffer);
+  s_pending_size = (uint16_t)(sample_count * sizeof(s_buffer[0]));
   prv_write_buffer();
 }
 

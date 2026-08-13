@@ -2,84 +2,22 @@
 
 #include <string.h>
 
-#include "gb_blob.h"
+#if defined(__GNUC__)
+#pragma GCC optimize("O3")
+#endif
 
-#ifdef PB_DESKTOP
-#define PB_LOG(fmt, ...)
-#else
 #define PB_LOG(fmt, ...) APP_LOG(APP_LOG_LEVEL_DEBUG, "cart: " fmt, ##__VA_ARGS__)
-#endif
-
-#ifndef PB_DESKTOP
-static const char *prv_mode_name(PbCartMode mode) {
-  switch (mode) {
-    case PB_CART_MODE_RESOURCE:
-      return "resource";
-    case PB_CART_MODE_BLOB:
-      return "blob";
-    case PB_CART_MODE_PHONE:
-      return "phone";
-    case PB_CART_MODE_MEMORY:
-      return "memory";
-    case PB_CART_MODE_NONE:
-    default:
-      return "none";
-  }
-}
-#endif
-
-static void prv_note_bank(uint64_t *mask, uint16_t bank) {
-  if (bank < 64) {
-    *mask |= ((uint64_t)1) << bank;
-  }
-}
 
 static uint16_t prv_bank_count(uint32_t rom_size) {
-  return (uint16_t)((rom_size + PB_CART_BANK_SIZE - 1) / PB_CART_BANK_SIZE);
+  return (uint16_t)(rom_size / PB_CART_BANK_SIZE);
 }
 
-static uint32_t prv_slot_start(uint32_t addr) {
+static uint32_t prv_line_start(uint32_t addr) {
   return addr & ~(PB_CART_LINE_SIZE - 1u);
 }
 
-static uint32_t prv_fill_unit(const PbCart *cart, uint32_t addr) {
-  (void)cart;
-  if (PB_CART_PINNED_SLOTS && addr < PB_CART_BANK_SIZE) {
-    return PB_CART_BANK_SIZE;
-  }
-  return PB_CART_LINE_SIZE;
-}
-
-static uint32_t prv_fill_start(const PbCart *cart, uint32_t addr) {
-  uint32_t fill_unit = prv_fill_unit(cart, addr);
-  return addr & ~(fill_unit - 1u);
-}
-
-static uint16_t prv_slot_size(const PbCart *cart, uint32_t start) {
-  if (start >= cart->rom_size) {
-    return 0;
-  }
-  uint32_t left = cart->rom_size - start;
-  return (uint16_t)(left > PB_CART_LINE_SIZE ? PB_CART_LINE_SIZE : left);
-}
-
-static uint16_t prv_fill_size(const PbCart *cart, uint32_t start) {
-  if (start >= cart->rom_size) {
-    return 0;
-  }
-  uint32_t fill_unit = prv_fill_unit(cart, start);
-  uint32_t bank_left = PB_CART_BANK_SIZE - (start & (PB_CART_BANK_SIZE - 1u));
-  uint32_t rom_left = cart->rom_size - start;
-  uint32_t left = bank_left < rom_left ? bank_left : rom_left;
-  return (uint16_t)(left > fill_unit ? fill_unit : left);
-}
-
-static uint16_t prv_slot_bank(uint32_t start) {
+static uint16_t prv_line_bank(uint32_t start) {
   return (uint16_t)(start / PB_CART_BANK_SIZE);
-}
-
-static uint16_t prv_slot_bank_offset(uint32_t start) {
-  return (uint16_t)(start & (PB_CART_BANK_SIZE - 1u));
 }
 
 static uint16_t prv_hash_bucket(uint32_t start) {
@@ -90,15 +28,15 @@ static uint16_t prv_hash_bucket(uint32_t start) {
   return (uint16_t)(line % PB_CART_HASH_BUCKETS);
 }
 
-static void prv_index_remove(PbCart *cart, uint16_t slot_index) {
+static void prv_index_remove(PbCart *cart, PbCartIndex slot_index) {
   PbCartSlot *slot = &cart->slots[slot_index];
-  if (slot->start < 0) {
+  if (slot->start == PB_CART_START_NONE) {
     return;
   }
 
-  uint16_t bucket = prv_hash_bucket((uint32_t)slot->start);
-  uint16_t current = cart->hash_buckets[bucket];
-  uint16_t previous = PB_CART_SLOT_NONE;
+  uint16_t bucket = prv_hash_bucket(slot->start);
+  PbCartIndex current = cart->hash_buckets[bucket];
+  PbCartIndex previous = PB_CART_SLOT_NONE;
   while (current != PB_CART_SLOT_NONE) {
     if (current == slot_index) {
       if (previous == PB_CART_SLOT_NONE) {
@@ -114,21 +52,20 @@ static void prv_index_remove(PbCart *cart, uint16_t slot_index) {
   slot->hash_next = PB_CART_SLOT_NONE;
 }
 
-static void prv_index_add(PbCart *cart, uint16_t slot_index) {
+static void prv_index_add(PbCart *cart, PbCartIndex slot_index) {
   PbCartSlot *slot = &cart->slots[slot_index];
-  uint16_t bucket = prv_hash_bucket((uint32_t)slot->start);
+  uint16_t bucket = prv_hash_bucket(slot->start);
   slot->hash_next = cart->hash_buckets[bucket];
   cart->hash_buckets[bucket] = slot_index;
 }
 
-static void prv_lru_remove(PbCart *cart, uint16_t slot_index) {
+static void prv_lru_remove(PbCart *cart, PbCartIndex slot_index) {
   PbCartSlot *slot = &cart->slots[slot_index];
   bool linked = cart->lru_head == slot_index || slot->lru_prev != PB_CART_SLOT_NONE ||
                 slot->lru_next != PB_CART_SLOT_NONE;
   if (!linked) {
     return;
   }
-
   if (slot->lru_prev != PB_CART_SLOT_NONE) {
     cart->slots[slot->lru_prev].lru_next = slot->lru_next;
   } else {
@@ -143,7 +80,7 @@ static void prv_lru_remove(PbCart *cart, uint16_t slot_index) {
   slot->lru_next = PB_CART_SLOT_NONE;
 }
 
-static void prv_lru_touch(PbCart *cart, uint16_t slot_index) {
+static void prv_lru_touch(PbCart *cart, PbCartIndex slot_index) {
   PbCartSlot *slot = &cart->slots[slot_index];
   prv_lru_remove(cart, slot_index);
   slot->lru_prev = PB_CART_SLOT_NONE;
@@ -156,223 +93,109 @@ static void prv_lru_touch(PbCart *cart, uint16_t slot_index) {
   cart->lru_head = slot_index;
 }
 
-static PbCartSlot *prv_find_slot(PbCart *cart, uint32_t start) {
-  if (PB_CART_PINNED_SLOTS && start < PB_CART_BANK_SIZE) {
-    uint16_t slot = (uint16_t)(start / PB_CART_LINE_SIZE);
-    return cart->slots[slot].start == (int32_t)start ? &cart->slots[slot] : NULL;
-  }
-  uint16_t slot = cart->hash_buckets[prv_hash_bucket(start)];
+static PbCartIndex prv_find_slot_index(const PbCart *cart, uint32_t start) {
+  PbCartIndex slot = cart->hash_buckets[prv_hash_bucket(start)];
   while (slot != PB_CART_SLOT_NONE) {
-    if (cart->slots[slot].start == (int32_t)start) {
-      return &cart->slots[slot];
+    if (cart->slots[slot].start == start) {
+      return slot;
     }
     slot = cart->slots[slot].hash_next;
   }
-  return NULL;
+  return PB_CART_SLOT_NONE;
 }
 
-static const PbCartSlot *prv_find_const_slot(const PbCart *cart, uint32_t start) {
-  if (PB_CART_PINNED_SLOTS && start < PB_CART_BANK_SIZE) {
-    uint16_t slot = (uint16_t)(start / PB_CART_LINE_SIZE);
-    return cart->slots[slot].start == (int32_t)start ? &cart->slots[slot] : NULL;
-  }
-  uint16_t slot = cart->hash_buckets[prv_hash_bucket(start)];
-  while (slot != PB_CART_SLOT_NONE) {
-    if (cart->slots[slot].start == (int32_t)start) {
-      return &cart->slots[slot];
-    }
-    slot = cart->slots[slot].hash_next;
-  }
-  return NULL;
-}
-
-static bool prv_has_loading_slots(const PbCart *cart) {
-  for (int i = 0; i < (int)PB_CART_CACHE_SLOTS; i++) {
-    if (cart->slots[i].loading) {
-      return true;
-    }
-  }
-  return false;
-}
-
-static bool prv_slot_is_active_bank(const PbCart *cart, const PbCartSlot *slot) {
-  return cart->active_bank != PB_CART_ACTIVE_BANK_NONE && slot->start >= 0 &&
-         prv_slot_bank((uint32_t)slot->start) == cart->active_bank;
-}
-
-static PbCartSlot *prv_select_slot(PbCart *cart, uint32_t start) {
-  PbCartSlot *existing = prv_find_slot(cart, start);
-  if (existing) {
+static PbCartIndex prv_select_slot(PbCart *cart, uint32_t start) {
+  PbCartIndex existing = prv_find_slot_index(cart, start);
+  if (existing != PB_CART_SLOT_NONE) {
     return existing;
   }
-
-  if (PB_CART_PINNED_SLOTS && prv_slot_bank(start) == 0) {
-    uint16_t line = (uint16_t)(start / PB_CART_LINE_SIZE);
-    if (line < PB_CART_BANK0_SLOTS) {
-      return &cart->slots[line];
+  for (unsigned i = 0; i < PB_CART_CACHE_SLOTS; i++) {
+    if (cart->slots[i].start == PB_CART_START_NONE) {
+      return (PbCartIndex)i;
     }
   }
-
-  for (int i = (int)PB_CART_PINNED_SLOTS; i < (int)PB_CART_CACHE_SLOTS; i++) {
-    if (!cart->slots[i].valid && !cart->slots[i].loading) {
-      return &cart->slots[i];
-    }
-  }
-
-  uint16_t victim = PB_CART_SLOT_NONE;
-  uint16_t active_victim = PB_CART_SLOT_NONE;
-  uint16_t current = cart->lru_tail;
-  while (current != PB_CART_SLOT_NONE) {
-    PbCartSlot *slot = &cart->slots[current];
-    if (slot->loading) {
-      current = slot->lru_prev;
-      continue;
-    }
-#if PB_CART_PINNED_SLOTS > 0
-    if (current < PB_CART_PINNED_SLOTS) {
-      current = slot->lru_prev;
-      continue;
-    }
-#endif
-    /* Full-bank configurations can afford to preserve the selected bank as a
-     * unit.  In the compact line cache, protecting every selected-bank line
-     * starves fixed-bank code and defeats temporal LRU locality. */
-    if (PB_CART_PINNED_SLOTS && prv_slot_is_active_bank(cart, slot)) {
-      if (active_victim == PB_CART_SLOT_NONE) {
-        active_victim = current;
-      }
-      current = slot->lru_prev;
-      continue;
-    }
-    victim = current;
-    break;
-  }
-  if (victim == PB_CART_SLOT_NONE) {
-    victim = active_victim;
-  }
-  if (victim == PB_CART_SLOT_NONE) {
-    victim = (uint16_t)PB_CART_PINNED_SLOTS;
-  }
-  return &cart->slots[victim];
+  return cart->lru_tail != PB_CART_SLOT_NONE ? cart->lru_tail : 0;
 }
 
-static void prv_prepare_slot(PbCart *cart, PbCartSlot *slot, uint32_t start, uint16_t size) {
-  uint16_t slot_index = (uint16_t)(slot - cart->slots);
+static bool prv_load_line(PbCart *cart, uint32_t start) {
+  if (start >= cart->rom_size) {
+    pb_cart_set_error(cart, "read outside ROM");
+    return false;
+  }
+
+  PbCartIndex slot_index = prv_select_slot(cart, start);
+  PbCartSlot *slot = &cart->slots[slot_index];
+  if (cart->last_read_slot == slot_index) {
+    cart->last_read_slot = PB_CART_SLOT_NONE;
+  }
   prv_index_remove(cart, slot_index);
   prv_lru_remove(cart, slot_index);
-  slot->start = (int32_t)start;
-  slot->valid = false;
-  slot->loading = false;
-  slot->size = size;
-  slot->received = 0;
-  memset(slot->data, 0xFF, PB_CART_SLOT_SIZE);
+  slot->start = PB_CART_START_NONE;
+
+  int loaded = -1;
+  if (cart->mode == PB_CART_MODE_RESOURCE) {
+    loaded = (int)resource_load_byte_range(cart->resource, start, slot->data,
+                                           PB_CART_LINE_SIZE);
+#ifdef PEBBLEBOY_APP_BLOB
+  } else if (cart->mode == PB_CART_MODE_BLOB) {
+    loaded = app_blob_read(start, slot->data, PB_CART_LINE_SIZE);
+#endif
+  }
+  if (loaded != (int)PB_CART_LINE_SIZE) {
+    cart->stats.failed_loads++;
+    pb_cart_set_error(cart, cart->mode == PB_CART_MODE_BLOB
+                               ? "flash ROM read failed"
+                               : "resource ROM read failed");
+    return false;
+  }
+
+  slot->start = start;
   prv_index_add(cart, slot_index);
+  prv_lru_touch(cart, slot_index);
+  cart->last_read_slot = slot_index;
+  cart->stats.loads++;
+  cart->stats.source_reads++;
+  cart->stats.source_bytes += PB_CART_LINE_SIZE;
+  cart->stats.last_load_bank = prv_line_bank(start);
+  if (cart->stats.loads <= 2) {
+    PB_LOG("bank %u line %u loaded", (unsigned)prv_line_bank(start),
+           (unsigned)(start & (PB_CART_BANK_SIZE - 1u)));
+  }
+  return true;
 }
 
 void pb_cart_init_empty(PbCart *cart) {
   memset(cart, 0, sizeof(*cart));
   cart->mode = PB_CART_MODE_NONE;
-  cart->pending_start = UINT32_MAX;
-  cart->read_fault_start = UINT32_MAX;
-  cart->active_bank = PB_CART_ACTIVE_BANK_NONE;
   cart->lru_head = PB_CART_SLOT_NONE;
   cart->lru_tail = PB_CART_SLOT_NONE;
-  cart->last_read_slot = UINT16_MAX;
-  for (int i = 0; i < (int)PB_CART_CACHE_SLOTS; i++) {
-    cart->slots[i].start = -1;
+  cart->last_read_slot = PB_CART_SLOT_NONE;
+  for (unsigned i = 0; i < PB_CART_CACHE_SLOTS; i++) {
+    cart->slots[i].start = PB_CART_START_NONE;
     cart->slots[i].hash_next = PB_CART_SLOT_NONE;
     cart->slots[i].lru_prev = PB_CART_SLOT_NONE;
     cart->slots[i].lru_next = PB_CART_SLOT_NONE;
   }
-  for (int i = 0; i < (int)PB_CART_HASH_BUCKETS; i++) {
-    cart->hash_buckets[i] = PB_CART_SLOT_NONE;
-  }
+  memset(cart->hash_buckets, PB_CART_SLOT_NONE, sizeof(cart->hash_buckets));
 }
 
-static bool prv_load_line_from_source(PbCart *cart, PbCartSlot *slot, uint32_t start) {
-  uint16_t size = prv_slot_size(cart, start);
-  prv_prepare_slot(cart, slot, start, size);
-
-#ifdef PB_DESKTOP
-  if (cart->mode == PB_CART_MODE_MEMORY) {
-    memcpy(slot->data, cart->memory + start, size);
-  } else
-#endif
-#ifndef PB_DESKTOP
-  if (cart->mode == PB_CART_MODE_RESOURCE) {
-    size_t loaded = resource_load_byte_range(cart->resource, start, slot->data, size);
-    if (loaded != size) {
-      cart->stats.failed_loads++;
-      pb_cart_set_error(cart, "resource read failed");
-      return false;
-    }
-#ifdef PEBBLEBOY_APP_BLOB
-  } else if (cart->mode == PB_CART_MODE_BLOB) {
-    int loaded = app_blob_read(start, slot->data, size);
-    if (loaded != size) {
-      cart->stats.failed_loads++;
-      pb_cart_set_error(cart, "flash ROM read failed");
-      return false;
-    }
-#endif
-  } else
-#endif
-  {
-    pb_cart_set_error(cart, "unsupported ROM source");
+static bool prv_validate_rom(PbCart *cart) {
+  if (cart->rom_size < 2u * PB_CART_BANK_SIZE ||
+      cart->rom_size % PB_CART_BANK_SIZE != 0) {
+    pb_cart_set_error(cart, "invalid ROM size");
     return false;
   }
-
-  slot->valid = true;
-  slot->loading = false;
-  slot->received = size;
-  prv_lru_touch(cart, (uint16_t)(slot - cart->slots));
-  cart->stats.source_reads++;
-  cart->stats.source_bytes += size;
-  return true;
+  cart->bank_count = prv_bank_count(cart->rom_size);
+  return prv_load_line(cart, 0);
 }
 
-static bool prv_load_fill(PbCart *cart, uint32_t requested_start) {
-  uint32_t start = prv_fill_start(cart, requested_start);
-  if (start >= cart->rom_size) {
-    pb_cart_set_error(cart, "fill outside ROM");
-    return false;
-  }
-
-  uint16_t fill_size = prv_fill_size(cart, start);
-  uint32_t end = start + fill_size;
-  for (uint32_t line_start = start; line_start < end; line_start += PB_CART_LINE_SIZE) {
-    PbCartSlot *slot = prv_select_slot(cart, line_start);
-    if (!prv_load_line_from_source(cart, slot, line_start)) {
-      return false;
-    }
-  }
-
-  cart->stats.loads++;
-  uint16_t bank = prv_slot_bank(start);
-  uint16_t offset = prv_slot_bank_offset(start);
-  (void)offset;
-  cart->stats.last_load_bank = bank;
-  prv_note_bank(&cart->stats.load_bank_mask, bank);
-  if (cart->mode == PB_CART_MODE_PHONE || cart->stats.loads <= 2) {
-    PB_LOG("%s bank %u fill %u loaded size=%u", prv_mode_name(cart->mode),
-           (unsigned)bank, (unsigned)offset, (unsigned)fill_size);
-  }
-  return true;
-}
-
-#ifndef PB_DESKTOP
 bool pb_cart_init_resource(PbCart *cart, uint32_t resource_id) {
   pb_cart_init_empty(cart);
   cart->mode = PB_CART_MODE_RESOURCE;
   cart->resource_id = resource_id;
   cart->resource = resource_get_handle(resource_id);
   cart->rom_size = (uint32_t)resource_size(cart->resource);
-  cart->bank_count = prv_bank_count(cart->rom_size);
-  if (cart->rom_size < 0x150 || cart->bank_count == 0) {
-    pb_cart_set_error(cart, "resource ROM missing");
-    return false;
-  }
-  return prv_load_fill(cart, 0);
+  return prv_validate_rom(cart);
 }
 
 #ifdef PEBBLEBOY_APP_BLOB
@@ -380,219 +203,60 @@ bool pb_cart_init_blob(PbCart *cart, uint32_t rom_size) {
   pb_cart_init_empty(cart);
   cart->mode = PB_CART_MODE_BLOB;
   cart->rom_size = rom_size;
-  cart->bank_count = prv_bank_count(rom_size);
-  if (rom_size < 0x150 || cart->bank_count == 0) {
-    pb_cart_set_error(cart, "flash ROM missing");
-    return false;
-  }
-  return prv_load_fill(cart, 0);
+  return prv_validate_rom(cart);
 }
 #endif
-#endif
-
-#ifdef PB_DESKTOP
-bool pb_cart_init_memory(PbCart *cart, const uint8_t *rom, uint32_t rom_size) {
-  pb_cart_init_empty(cart);
-  cart->mode = PB_CART_MODE_MEMORY;
-  cart->memory = rom;
-  cart->rom_size = rom_size;
-  cart->bank_count = prv_bank_count(rom_size);
-  if (!rom || rom_size < 0x150 || cart->bank_count == 0) {
-    pb_cart_set_error(cart, "memory ROM missing");
-    return false;
-  }
-  return prv_load_fill(cart, 0);
-}
-#endif
-
-bool pb_cart_init_phone(PbCart *cart, uint32_t rom_size, PbCartBankRequestCb request_cb,
-                        void *request_context) {
-  pb_cart_init_empty(cart);
-  cart->mode = PB_CART_MODE_PHONE;
-  cart->rom_size = rom_size;
-  cart->bank_count = prv_bank_count(rom_size);
-  cart->request_cb = request_cb;
-  cart->request_context = request_context;
-  if (rom_size < 0x150 || cart->bank_count == 0) {
-    pb_cart_set_error(cart, "phone ROM missing");
-    return false;
-  }
-  return true;
-}
-
-static void prv_prepare_loading_fill(PbCart *cart, uint32_t start, uint16_t fill_size) {
-  start = prv_slot_start(start);
-  uint32_t end = start + fill_size;
-  for (uint32_t line_start = start; line_start < end; line_start += PB_CART_LINE_SIZE) {
-    PbCartSlot *slot = prv_select_slot(cart, line_start);
-    prv_prepare_slot(cart, slot, line_start, prv_slot_size(cart, line_start));
-    slot->loading = true;
-    prv_lru_touch(cart, (uint16_t)(slot - cart->slots));
-  }
-}
-
-static bool prv_request_phone_fill(PbCart *cart, uint32_t requested_start, bool demand) {
-  uint32_t line_start = prv_slot_start(requested_start);
-  uint32_t start = prv_fill_start(cart, line_start);
-  uint16_t bank = prv_slot_bank(start);
-  uint16_t offset = prv_slot_bank_offset(start);
-  uint16_t size = prv_fill_size(cart, start);
-  PbCartSlot *slot = prv_find_slot(cart, line_start);
-  if (slot && slot->loading) {
-    if (demand) {
-      cart->paused = true;
-      cart->pending_start = line_start;
-      return true;
-    }
-    return false;
-  }
-
-  if (prv_has_loading_slots(cart) || !cart->request_cb ||
-      !cart->request_cb(bank, offset, size, demand, cart->request_context)) {
-    return false;
-  }
-
-  prv_prepare_loading_fill(cart, start, size);
-  if (demand) {
-    cart->paused = true;
-    cart->pending_start = line_start;
-  }
-  cart->stats.phone_requests++;
-  prv_note_bank(&cart->stats.request_bank_mask, bank);
-  PB_LOG("phone request bank %u fill %u size=%u%s", (unsigned)bank,
-         (unsigned)offset, (unsigned)size, demand ? "" : " prefetch");
-  return true;
-}
 
 bool pb_cart_ensure_addr(PbCart *cart, uint32_t addr) {
   if (addr >= cart->rom_size) {
     pb_cart_set_error(cart, "address outside ROM");
     return false;
   }
-
-  uint32_t start = prv_slot_start(addr);
-  uint16_t bank = prv_slot_bank(start);
-  const PbCartSlot *slot = prv_find_const_slot(cart, start);
-  if (slot && slot->valid) {
+  uint32_t start = prv_line_start(addr);
+  if (prv_find_slot_index(cart, start) != PB_CART_SLOT_NONE) {
     return true;
   }
-
   cart->stats.misses++;
-  cart->stats.last_miss_bank = bank;
-  if (cart->mode == PB_CART_MODE_PHONE) {
-    prv_request_phone_fill(cart, start, true);
-    return false;
-  }
-  return prv_load_fill(cart, start);
+  cart->stats.last_miss_bank = prv_line_bank(start);
+  return prv_load_line(cart, start);
 }
 
 bool pb_cart_ensure_bank(PbCart *cart, uint16_t bank) {
-  uint32_t start = (uint32_t)bank * PB_CART_BANK_SIZE;
-  if (start >= cart->rom_size) {
-    pb_cart_set_error(cart, "bank outside ROM");
-    return false;
-  }
-  return pb_cart_ensure_addr(cart, start);
-}
-
-bool pb_cart_ensure_fixed_bank(PbCart *cart) {
-  for (uint32_t start = 0; start < PB_CART_BANK_SIZE && start < cart->rom_size;
-       start += PB_CART_LINE_SIZE) {
-    const PbCartSlot *slot = prv_find_const_slot(cart, start);
-    if (slot && slot->valid) {
-      continue;
-    }
-    if (!pb_cart_ensure_addr(cart, start)) {
-      return false;
-    }
-  }
-  return true;
+  return pb_cart_ensure_addr(cart, (uint32_t)bank * PB_CART_BANK_SIZE);
 }
 
 uint8_t pb_cart_read_slow(PbCart *cart, uint32_t addr) {
   if (addr >= cart->rom_size) {
     return 0xFF;
   }
-
-  uint32_t start = prv_slot_start(addr);
-  uint16_t bank = prv_slot_bank(start);
-  uint16_t offset = (uint16_t)(addr - start);
-  PbCartSlot *slot = prv_find_slot(cart, start);
-  if (!slot || !slot->valid) {
+  uint32_t start = prv_line_start(addr);
+  PbCartIndex slot_index = prv_find_slot_index(cart, start);
+  if (slot_index == PB_CART_SLOT_NONE) {
     cart->stats.misses++;
-    cart->stats.last_miss_bank = bank;
-    if (cart->mode == PB_CART_MODE_PHONE) {
-      cart->read_faulted = true;
-      cart->read_fault_start = start;
-      prv_request_phone_fill(cart, start, true);
+    cart->stats.last_miss_bank = prv_line_bank(start);
+    if (!prv_load_line(cart, start)) {
       return 0xFF;
     }
-    if (!prv_load_fill(cart, start)) {
-      return 0xFF;
-    }
-    slot = prv_find_slot(cart, start);
+    slot_index = cart->last_read_slot;
   }
-
-  if (!slot || !slot->valid || offset >= slot->size) {
+  if (slot_index == PB_CART_SLOT_NONE) {
     return 0xFF;
   }
-  uint16_t slot_index = (uint16_t)(slot - cart->slots);
   if (slot_index != cart->last_read_slot) {
     prv_lru_touch(cart, slot_index);
     cart->last_read_slot = slot_index;
   }
-#if PB_CART_TRACK_HITS
-  cart->stats.hits++;
-#endif
-  return slot->data[offset];
+  return cart->slots[slot_index].data[addr - start];
 }
 
 bool pb_cart_has_bank(const PbCart *cart, uint16_t bank) {
   uint32_t start = (uint32_t)bank * PB_CART_BANK_SIZE;
-  const PbCartSlot *slot = prv_find_const_slot(cart, start);
-  return slot && slot->valid;
-}
-
-bool pb_cart_prefetch_addr(PbCart *cart, uint32_t addr) {
-  if (cart->mode != PB_CART_MODE_PHONE || addr >= cart->rom_size) {
-    return false;
-  }
-  uint32_t start = prv_slot_start(addr);
-  const PbCartSlot *slot = prv_find_const_slot(cart, start);
-  if (slot && (slot->valid || slot->loading)) {
-    return false;
-  }
-  return prv_request_phone_fill(cart, start, false);
-}
-
-void pb_cart_set_active_bank(PbCart *cart, uint16_t bank) {
-  cart->active_bank = bank < cart->bank_count ? bank : PB_CART_ACTIVE_BANK_NONE;
-}
-
-bool pb_cart_paused(const PbCart *cart) {
-  return cart->paused || cart->failed;
-}
-
-bool pb_cart_read_faulted(const PbCart *cart) {
-  return cart->read_faulted;
-}
-
-void pb_cart_clear_read_fault(PbCart *cart) {
-  cart->read_faulted = false;
-  cart->read_fault_start = UINT32_MAX;
-}
-
-void pb_cart_resume(PbCart *cart) {
-  if (!cart->failed) {
-    cart->paused = false;
-    cart->pending_start = UINT32_MAX;
-    pb_cart_clear_read_fault(cart);
-  }
+  return start < cart->rom_size &&
+         prv_find_slot_index(cart, start) != PB_CART_SLOT_NONE;
 }
 
 void pb_cart_set_error(PbCart *cart, const char *message) {
   cart->failed = true;
-  cart->paused = true;
   strncpy(cart->error, message ? message : "cart error", sizeof(cart->error) - 1);
   cart->error[sizeof(cart->error) - 1] = '\0';
   PB_LOG("%s", cart->error);
@@ -600,78 +264,4 @@ void pb_cart_set_error(PbCart *cart, const char *message) {
 
 const PbCartStats *pb_cart_stats(const PbCart *cart) {
   return &cart->stats;
-}
-
-bool pb_cart_phone_begin(PbCart *cart, uint16_t bank, uint16_t offset, uint16_t size) {
-  if (cart->mode != PB_CART_MODE_PHONE || bank >= cart->bank_count ||
-      offset >= PB_CART_BANK_SIZE || size > PB_CART_FILL_SIZE ||
-      offset + size > PB_CART_BANK_SIZE) {
-    return false;
-  }
-  uint32_t start = (uint32_t)bank * PB_CART_BANK_SIZE + offset;
-  prv_prepare_loading_fill(cart, start, size);
-  return true;
-}
-
-bool pb_cart_phone_data(PbCart *cart, uint16_t bank, uint16_t offset, const uint8_t *data,
-                        uint16_t len) {
-  uint32_t abs = (uint32_t)bank * PB_CART_BANK_SIZE + offset;
-  uint16_t copied = 0;
-  while (copied < len) {
-    uint32_t cur = abs + copied;
-    uint32_t start = prv_slot_start(cur);
-    PbCartSlot *slot = prv_find_slot(cart, start);
-    if (!slot || !slot->loading || cur < (uint32_t)slot->start ||
-        cur >= (uint32_t)slot->start + slot->size) {
-      return false;
-    }
-    uint16_t slot_offset = (uint16_t)(cur - (uint32_t)slot->start);
-    uint16_t room = (uint16_t)(slot->size - slot_offset);
-    uint16_t chunk = (uint16_t)(len - copied);
-    if (chunk > room) {
-      chunk = room;
-    }
-    memcpy(slot->data + slot_offset, data + copied, chunk);
-    uint16_t end = slot_offset + chunk;
-    if (end > slot->received) {
-      slot->received = end;
-    }
-    prv_lru_touch(cart, (uint16_t)(slot - cart->slots));
-    copied += chunk;
-  }
-  return true;
-}
-
-bool pb_cart_phone_end(PbCart *cart, uint16_t bank, uint16_t offset, uint16_t size) {
-  uint32_t start = (uint32_t)bank * PB_CART_BANK_SIZE + offset;
-  uint16_t fill_size = size ? size : prv_fill_size(cart, start);
-  uint32_t end = start + fill_size;
-  for (uint32_t line_start = start; line_start < end; line_start += PB_CART_LINE_SIZE) {
-    PbCartSlot *slot = prv_find_slot(cart, line_start);
-    if (!slot || !slot->loading) {
-      return false;
-    }
-    if (slot->received < slot->size) {
-      cart->stats.failed_loads++;
-      pb_cart_set_error(cart, "incomplete phone fill");
-      return false;
-    }
-  }
-  for (uint32_t line_start = start; line_start < end; line_start += PB_CART_LINE_SIZE) {
-    PbCartSlot *slot = prv_find_slot(cart, line_start);
-    slot->valid = true;
-    slot->loading = false;
-    prv_lru_touch(cart, (uint16_t)(slot - cart->slots));
-  }
-  cart->stats.loads++;
-  cart->stats.last_load_bank = bank;
-  prv_note_bank(&cart->stats.load_bank_mask, bank);
-  PB_LOG("phone bank %u fill %u loaded size=%u", (unsigned)bank,
-         (unsigned)offset, (unsigned)fill_size);
-  const PbCartSlot *pending = prv_find_const_slot(cart, cart->pending_start);
-  if ((cart->pending_start >= start && cart->pending_start < end) ||
-      (pending && pending->valid) || !prv_has_loading_slots(cart)) {
-    pb_cart_resume(cart);
-  }
-  return true;
 }

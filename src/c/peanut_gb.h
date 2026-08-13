@@ -38,6 +38,9 @@
 #ifndef __not_in_flash_func
 # define __not_in_flash_func(name) name
 #endif
+#ifndef PEANUT_GB_HOT
+# define PEANUT_GB_HOT
+#endif
 
 #if defined(__has_include)
 # if __has_include("version.all")
@@ -785,7 +788,7 @@ void gb_tick_rtc(struct gb_s *gb);
  * Internal function used to read bytes.
  * addr is host platform endian.
  */
-uint8_t __not_in_flash_func(__gb_read)(struct gb_s *gb, uint16_t addr)
+uint8_t PEANUT_GB_HOT __not_in_flash_func(__gb_read)(struct gb_s *gb, uint16_t addr)
 {
 	switch(PEANUT_GB_GET_MSN16(addr))
 	{
@@ -952,7 +955,7 @@ uint8_t __not_in_flash_func(__gb_read)(struct gb_s *gb, uint16_t addr)
 }
 
 /* Fast path for the overwhelmingly common instruction fetch from ROM. */
-static __attribute__((noinline)) uint8_t __gb_fetch8(struct gb_s *gb)
+static PEANUT_GB_HOT __attribute__((noinline)) uint8_t __gb_fetch8(struct gb_s *gb)
 {
 	uint16_t addr = gb->cpu_reg.pc.reg++;
 
@@ -978,7 +981,8 @@ static __attribute__((noinline)) uint8_t __gb_fetch8(struct gb_s *gb)
 /**
  * Internal function used to write bytes.
  */
-void __not_in_flash_func(__gb_write)(struct gb_s *gb, uint_fast16_t addr, uint8_t val)
+void PEANUT_GB_HOT __not_in_flash_func(__gb_write)(struct gb_s *gb,
+                                                   uint_fast16_t addr, uint8_t val)
 {
 	switch(PEANUT_GB_GET_MSN16(addr))
 	{
@@ -1452,7 +1456,7 @@ void __not_in_flash_func(__gb_write)(struct gb_s *gb, uint_fast16_t addr, uint8_
 	return;
 }
 
-uint8_t __not_in_flash_func(__gb_execute_cb)(struct gb_s *gb)
+uint8_t PEANUT_GB_HOT __not_in_flash_func(__gb_execute_cb)(struct gb_s *gb)
 {
 	uint8_t inst_cycles;
 	uint8_t cbop = __gb_fetch8(gb);
@@ -1669,7 +1673,7 @@ static int compare_sprites(const void *in1, const void *in2)
 }
 #endif
 
-void __not_in_flash_func(__gb_draw_line)(struct gb_s *gb)
+void PEANUT_GB_HOT __not_in_flash_func(__gb_draw_line)(struct gb_s *gb)
 {
 	uint8_t pixels[160] = {0};
 
@@ -2171,7 +2175,7 @@ void __not_in_flash_func(__gb_draw_line)(struct gb_s *gb)
 /**
  * Internal function used to step the CPU.
  */
-void __not_in_flash_func(__gb_step_cpu)(struct gb_s *gb)
+void PEANUT_GB_HOT __not_in_flash_func(__gb_step_cpu)(struct gb_s *gb)
 {
 	uint8_t opcode;
 	uint_fast16_t inst_cycles;
@@ -3965,7 +3969,7 @@ void __not_in_flash_func(__gb_step_cpu)(struct gb_s *gb)
 	/* If halted, loop until an interrupt occurs. */
 }
 
-void __not_in_flash_func(gb_run_frame)(struct gb_s *gb)
+void PEANUT_GB_HOT __not_in_flash_func(gb_run_frame)(struct gb_s *gb)
 {
 	gb->gb_frame = 0;
 

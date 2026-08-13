@@ -13,10 +13,12 @@
 #include "gb_save.h"
 #include "gb_video.h"
 
-#define FRAME_MS 33
-#define FRAME_CATCHUP_LIMIT_MS (FRAME_MS * 4)
-#define NORMAL_FRAMES_PER_TICK 2u
-#define FAST_FRAMES_PER_TICK 4u
+#define FRAME_RATE_HZ 60u
+#define FRAME_BASE_MS (1000u / FRAME_RATE_HZ)
+#define FRAME_REMAINDER_MS (1000u % FRAME_RATE_HZ)
+#define FRAME_CATCHUP_LIMIT_MS (FRAME_BASE_MS * 8u)
+#define NORMAL_FRAMES_PER_TICK 1u
+#define FAST_FRAMES_PER_TICK 2u
 #define PHONE_INFO_RETRY_MS 2000
 /* Persist storage is already chunked at 256 bytes. Paging SRAM at that same
  * granularity avoids holding a mostly cold 4 KiB bank in the app heap. */
@@ -63,6 +65,12 @@ static uint64_t s_last_log_ms;
 static uint32_t s_last_log_frame;
 static uint64_t s_last_phone_info_request_ms;
 static uint64_t s_next_frame_deadline_ms;
+static uint8_t s_frame_deadline_remainder;
+/* A compositor callback may advance one displayed frame between timer ticks.
+ * The next timer subtracts that credit from its headless work, keeping game
+ * and audio time fixed even when Pebble coalesces presentation requests. */
+static bool s_draw_frame_pending;
+static uint8_t s_draw_frame_credit;
 
 #ifdef PEBBLEBOY_APP_BLOB
 typedef struct {
@@ -105,6 +113,25 @@ typedef struct {
 static void prv_frame_timer_cb(void *data);
 static void prv_schedule_frame_timer(uint32_t delay_ms);
 static void prv_update_canvas_frame(void);
+
+static void prv_advance_frame_deadline(void) {
+  s_next_frame_deadline_ms += FRAME_BASE_MS;
+  s_frame_deadline_remainder =
+      (uint8_t)(s_frame_deadline_remainder + FRAME_REMAINDER_MS);
+  if (s_frame_deadline_remainder >= FRAME_RATE_HZ) {
+    s_next_frame_deadline_ms++;
+    s_frame_deadline_remainder =
+        (uint8_t)(s_frame_deadline_remainder - FRAME_RATE_HZ);
+  }
+}
+
+static void prv_reset_frame_deadline(uint64_t now_ms, bool immediate) {
+  s_next_frame_deadline_ms = now_ms;
+  s_frame_deadline_remainder = 0;
+  if (!immediate) {
+    prv_advance_frame_deadline();
+  }
+}
 
 static void prv_set_rom_selector(bool selecting) {
   s_rom_selector = selecting;
@@ -239,16 +266,14 @@ static void prv_set_fast_forward(bool enabled) {
   }
   s_fast_forward = enabled;
   if (s_gb) {
-    s_gb->direct.frame_skip = !enabled;
+    s_gb->direct.frame_skip = false;
     s_gb->display.lcd_draw_line = prv_lcd_draw_line;
-    if (!enabled) {
-      s_gb->display.frame_skip_count = 0;
-    }
+    s_gb->display.frame_skip_count = 0;
   }
   if (enabled) {
     pb_audio_suspend_stream();
   }
-  s_next_frame_deadline_ms = prv_now_ms() + FRAME_MS;
+  prv_reset_frame_deadline(prv_now_ms(), true);
   APP_LOG(APP_LOG_LEVEL_INFO, "fast-forward %s", enabled ? "enabled" : "disabled");
   if (s_canvas) {
     layer_mark_dirty(s_canvas);
@@ -365,13 +390,15 @@ static void prv_flush_local_save(const char *reason) {
 static void prv_focus_handler(bool in_focus) {
   s_in_focus = in_focus;
   if (!in_focus) {
+    s_draw_frame_pending = false;
+    s_draw_frame_credit = 0;
     pb_audio_suspend_stream();
     prv_flush_local_save("focus-loss");
     prv_flush_rtc("focus-loss");
     return;
   }
 
-  s_next_frame_deadline_ms = prv_now_ms() + FRAME_MS;
+  prv_reset_frame_deadline(prv_now_ms(), true);
   if (s_running) {
     prv_schedule_frame_timer(1);
   }
@@ -436,6 +463,8 @@ static bool prv_start_from_cart(const char *source_name) {
   s_rtc_active = false;
   s_running = false;
   s_fast_forward = false;
+  s_draw_frame_pending = false;
+  s_draw_frame_credit = 0;
   prv_free_save_ram();
   pb_video_clear(0);
 
@@ -452,11 +481,13 @@ static bool prv_start_from_cart(const char *source_name) {
     layer_mark_dirty(s_canvas);
     return false;
   }
-  pb_cart_set_active_bank(s_cart, s_gb->selected_rom_bank);
   prv_init_rtc();
 
   gb_init_lcd(s_gb, prv_lcd_draw_line);
-  s_gb->direct.frame_skip = true;
+  /* Pebbleboy controls which emulated frame is drawn. Peanut-GB's alternating
+   * frame skip cannot distinguish a late compositor callback from a timely
+   * one, so leaving it enabled would make the decoupled scheduler irregular. */
+  s_gb->direct.frame_skip = false;
   s_gb->direct.interlace = false;
 
   size_t save_size = 0;
@@ -483,12 +514,6 @@ static bool prv_start_from_cart(const char *source_name) {
   memset(&s_profile, 0, sizeof(s_profile));
   s_running = true;
   return true;
-}
-
-void pb_core_rom_bank_changed(struct gb_s *gb) {
-  if (gb == s_gb && s_cart) {
-    pb_cart_set_active_bank(s_cart, gb->selected_rom_bank);
-  }
 }
 
 bool pb_core_should_pause(struct gb_s *gb) {
@@ -739,11 +764,11 @@ static void prv_log_perf(void) {
   uint32_t frame_delta = s_frames - s_last_log_frame;
   uint32_t ms_delta = (uint32_t)(now - s_last_log_ms);
   APP_LOG(APP_LOG_LEVEL_INFO,
-          "fps=%u cache m=%lu fills=%lu req=%lu last=%u/%u load_ms=%lu heap=%u/%u",
+          "fps=%u cache m=%lu fills=%lu last=%u/%u heap=%u/%u",
           (unsigned)((frame_delta * 1000u) / (ms_delta ? ms_delta : 1)),
-          stats->misses, stats->loads, stats->phone_requests,
+          stats->misses, stats->loads,
           (unsigned)stats->last_miss_bank, (unsigned)stats->last_load_bank,
-          stats->last_load_ms, (unsigned)heap_bytes_free(), (unsigned)heap_bytes_used());
+          (unsigned)heap_bytes_free(), (unsigned)heap_bytes_used());
   APP_LOG(APP_LOG_LEVEL_INFO,
           "io reads=%lu bytes=%lu save dirty=%u reads=%u/%lu writes=%u/%lu audio=%lu/%lu/%lu",
           stats->source_reads, stats->source_bytes,
@@ -816,59 +841,80 @@ static bool prv_run_one_frame(void) {
   return true;
 }
 
+static bool prv_run_profiled_frame(bool draw) {
+  s_gb->display.lcd_draw_line = draw ? prv_lcd_draw_line : NULL;
+  uint64_t phase_start_ms = prv_now_ms();
+  bool completed = prv_run_one_frame();
+  s_profile.cpu_ms += prv_elapsed_ms(phase_start_ms);
+  return completed;
+}
+
+static void prv_record_tick_time(uint64_t started_ms) {
+  uint32_t elapsed_ms = prv_elapsed_ms(started_ms);
+  s_profile.tick_ms += elapsed_ms;
+  if (elapsed_ms > s_profile.max_tick_ms) {
+    s_profile.max_tick_ms = elapsed_ms;
+  }
+}
+
 static void prv_frame_timer_cb(void *data) {
   (void)data;
   s_timer = NULL;
-  uint64_t now = prv_now_ms();
-  uint64_t tick_start_ms = now;
-  prv_maybe_request_phone_info(now);
+  uint64_t tick_start_ms = prv_now_ms();
+  prv_maybe_request_phone_info(tick_start_ms);
 
   bool can_run = s_running && s_in_focus && !s_cart->failed;
   if (can_run) {
-    uint8_t frames_per_tick = s_fast_forward
-                                  ? FAST_FRAMES_PER_TICK
-                                  : NORMAL_FRAMES_PER_TICK;
-    uint8_t completed_frames = 0;
     if (s_fast_forward) {
       pb_audio_suspend_stream();
     }
-    for (uint8_t i = 0; i < frames_per_tick; i++) {
-      if (s_fast_forward) {
-        /* Draw the second frame so a watch that cannot complete all four
-         * still presents at the normal 30 FPS. Later frames advance only the
-         * emulated state and are bounded by the normal scheduler quantum. */
-        s_gb->direct.frame_skip = false;
-        s_gb->display.lcd_draw_line = i == 1 ? prv_lcd_draw_line : NULL;
-      }
-      uint64_t phase_start_ms = prv_now_ms();
-      if (!prv_run_one_frame()) {
-        s_profile.cpu_ms += prv_elapsed_ms(phase_start_ms);
+
+    uint8_t frames_per_tick = s_fast_forward
+                                  ? FAST_FRAMES_PER_TICK
+                                  : NORMAL_FRAMES_PER_TICK;
+    uint8_t draw_credit = s_draw_frame_credit < frames_per_tick
+                              ? s_draw_frame_credit
+                              : frames_per_tick;
+    s_draw_frame_credit = 0;
+    if (s_draw_frame_pending) {
+      s_profile.unchanged++;
+    }
+    s_draw_frame_pending = false;
+
+    /* A drawn frame is real emulation work, so compensate for it at the next
+     * 60 Hz timer. If presentation was coalesced, run that frame headlessly.
+     * Audio is owned exclusively by this evenly paced timer; compositor timing
+     * must never bunch two writes together or leave a gap in the PCM stream. */
+    uint8_t headless_target = (uint8_t)(frames_per_tick - draw_credit);
+    uint8_t completed = 0;
+    while (completed < headless_target) {
+      if (!prv_run_profiled_frame(false)) {
         break;
       }
-      s_profile.cpu_ms += prv_elapsed_ms(phase_start_ms);
-      completed_frames++;
-
-      if (!s_fast_forward) {
-        // Capture APU state after each emulated frame. Pumping only after both
-        // frames discarded every other 60 Hz register update and made music
-        // transitions sound coarse even when the PCM stream itself was healthy.
-        phase_start_ms = prv_now_ms();
-        pb_audio_pump();
-        s_profile.audio_ms += prv_elapsed_ms(phase_start_ms);
-      } else if (completed_frames >= NORMAL_FRAMES_PER_TICK &&
-                 prv_elapsed_ms(tick_start_ms) >= FRAME_MS) {
+      completed++;
+      if (s_fast_forward && completed >= NORMAL_FRAMES_PER_TICK &&
+          prv_elapsed_ms(tick_start_ms) >= FRAME_BASE_MS) {
         break;
       }
     }
-    s_gb->display.lcd_draw_line = prv_lcd_draw_line;
 
-    while (!s_fast_forward && completed_frames < NORMAL_FRAMES_PER_TICK) {
+    if (!s_fast_forward) {
       uint64_t phase_start_ms = prv_now_ms();
-      pb_audio_pump_silence();
+      if (draw_credit || completed) {
+        pb_audio_pump();
+      } else {
+        pb_audio_pump_silence();
+      }
       s_profile.audio_ms += prv_elapsed_ms(phase_start_ms);
-      completed_frames++;
+    }
+
+    if (!s_cart->failed && s_canvas) {
+      s_draw_frame_pending = true;
+      layer_mark_dirty(s_canvas);
     }
   } else {
+    s_draw_frame_pending = false;
+    s_draw_frame_credit = 0;
     if (s_running && s_in_focus) {
       pb_audio_pump_silence();
     } else {
@@ -876,30 +922,19 @@ static void prv_frame_timer_cb(void *data) {
     }
   }
 
-  if (s_canvas && pb_video_take_changed()) {
-    layer_mark_dirty(s_canvas);
-    s_profile.presented++;
-  } else if (s_running) {
-    s_profile.unchanged++;
-  }
-
   uint64_t tick_end_ms = prv_now_ms();
-  uint64_t elapsed = tick_end_ms - tick_start_ms;
   if (s_running) {
-    uint32_t elapsed_ms = (uint32_t)elapsed;
-    s_profile.tick_ms += elapsed_ms;
-    if (elapsed_ms > s_profile.max_tick_ms) {
-      s_profile.max_tick_ms = elapsed_ms;
-    }
+    prv_record_tick_time(tick_start_ms);
     s_profile.ticks++;
     prv_log_perf();
   }
   if (!s_next_frame_deadline_ms) {
     s_next_frame_deadline_ms = tick_start_ms;
+    s_frame_deadline_remainder = 0;
   }
-  s_next_frame_deadline_ms += FRAME_MS;
+  prv_advance_frame_deadline();
   if (tick_end_ms > s_next_frame_deadline_ms + FRAME_CATCHUP_LIMIT_MS) {
-    s_next_frame_deadline_ms = tick_end_ms + FRAME_MS;
+    prv_reset_frame_deadline(tick_end_ms, false);
   }
   uint32_t delay = 1;
   if (tick_end_ms < s_next_frame_deadline_ms) {
@@ -913,6 +948,31 @@ static void prv_frame_timer_cb(void *data) {
 static PB_SIZE_OPT void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
   uint64_t render_start_ms = prv_now_ms();
   GRect bounds = layer_get_bounds(layer);
+  GRect root_frame = layer_get_frame(window_get_root_layer(s_window));
+  PbVideoScale scale = pb_video_scale();
+  GRect render_bounds = scale == PB_VIDEO_SCALE_1X
+                            ? layer_get_frame(layer)
+                            : root_frame;
+  if (scale == PB_VIDEO_SCALE_1X) {
+    render_bounds.origin.x += root_frame.origin.x;
+    render_bounds.origin.y += root_frame.origin.y;
+  }
+  if (s_draw_frame_pending && s_running && s_in_focus && !s_cart->failed) {
+    uint64_t tick_start_ms = prv_now_ms();
+    if (pb_video_begin_frame(ctx, render_bounds)) {
+      bool completed = prv_run_profiled_frame(true);
+      pb_video_end_frame(ctx);
+      s_draw_frame_pending = false;
+      if (completed) {
+        s_profile.presented++;
+        if (s_draw_frame_credit < UINT8_MAX) {
+          s_draw_frame_credit++;
+        }
+      }
+      prv_record_tick_time(tick_start_ms);
+    }
+    render_start_ms = prv_now_ms();
+  }
 
   if (s_rom_selector) {
     graphics_context_set_fill_color(ctx, GColorBlack);
@@ -958,17 +1018,6 @@ static PB_SIZE_OPT void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
     return;
   }
 
-  GRect root_frame = layer_get_frame(window_get_root_layer(s_window));
-  PbVideoScale scale = pb_video_scale();
-  GRect render_bounds = scale == PB_VIDEO_SCALE_1X
-                            ? layer_get_frame(layer)
-                            : root_frame;
-  if (scale == PB_VIDEO_SCALE_1X) {
-    render_bounds.origin.x += root_frame.origin.x;
-    render_bounds.origin.y += root_frame.origin.y;
-  }
-  pb_video_render(ctx, render_bounds);
-
   if (s_running && s_fast_forward) {
     GRect badge = GRect(bounds.size.w - 30, 2, 28, 20);
     graphics_context_set_fill_color(ctx, GColorBlack);
@@ -980,6 +1029,8 @@ static PB_SIZE_OPT void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
   }
 
   if (!s_running || !s_cart || s_cart->failed) {
+    graphics_context_set_fill_color(ctx, GColorBlack);
+    graphics_fill_rect(ctx, bounds, 0, GCornerNone);
     int16_t status_y = bounds.size.h - 34;
     int16_t status_h = 30;
     if (scale == PB_VIDEO_SCALE_ASPECT_FIT) {
@@ -1210,8 +1261,9 @@ static PB_SIZE_OPT void prv_window_load(Window *window) {
   touch_service_subscribe(prv_touch_handler, NULL);
 #endif
 
-  s_next_frame_deadline_ms = prv_now_ms() + FRAME_MS;
-  prv_schedule_frame_timer(FRAME_MS);
+  uint64_t now_ms = prv_now_ms();
+  prv_reset_frame_deadline(now_ms, false);
+  prv_schedule_frame_timer((uint32_t)(s_next_frame_deadline_ms - now_ms));
 }
 
 static void prv_window_unload(Window *window) {

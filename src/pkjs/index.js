@@ -1,14 +1,7 @@
 var CMD = {
   ROM_INFO_REQUEST: 10,
   ROM_INFO: 11,
-  ROM_BANK_REQUEST: 12,
-  ROM_BANK_BEGIN: 13,
-  ROM_BANK_DATA: 14,
-  ROM_BANK_END: 15,
   ROM_ERROR: 16,
-  SRAM_LOAD_REQUEST: 20,
-  SRAM_LOAD_DATA: 21,
-  SRAM_SAVE: 22,
   ROM_LIST_REQUEST: 30,
   ROM_LIST_BEGIN: 31,
   ROM_LIST_ITEM: 32,
@@ -26,7 +19,6 @@ var CACHE_CHUNK = 8192;
 var CACHE_SAVE_INITIAL_DELAY_MS = 5000;
 var CACHE_SAVE_IDLE_DELAY_MS = 250;
 var CACHE_SAVE_CHUNK_DELAY_MS = 25;
-var SRAM_PAGE_SIZE = 4096;
 var MAX_ROM_SIZE = 8 * 1024 * 1024;
 var MAX_ROM_LIBRARY = 12;
 var MAX_SEND_RETRIES = 5;
@@ -370,102 +362,6 @@ function clearCachedRom() {
   romMeta = null;
 }
 
-function sramKey(parts) {
-  if (!romMeta || !romMeta.sha1) {
-    return null;
-  }
-  return ['sram', romMeta.sha1].concat(parts).join(':');
-}
-
-function payloadToBytes(payload) {
-  if (!payload) {
-    return new Uint8Array(0);
-  }
-  if (payload instanceof Uint8Array) {
-    return payload;
-  }
-  return new Uint8Array(payload);
-}
-
-function isAllFF(bytes) {
-  for (var i = 0; i < bytes.length; i++) {
-    if (bytes[i] !== 0xFF) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function loadSramChunk(bank, offset, len) {
-  var key = sramKey(['bank', bank, 'chunk', Math.floor(offset / MSG_CHUNK)]);
-  if (!key) {
-    var missing = new Uint8Array(len);
-    for (var m = 0; m < missing.length; m++) {
-      missing[m] = 0xFF;
-    }
-    return missing;
-  }
-  var stored = localStorage.getItem(key);
-  if (!stored) {
-    var blank = new Uint8Array(len);
-    for (var i = 0; i < blank.length; i++) {
-      blank[i] = 0xFF;
-    }
-    return blank;
-  }
-  var bytes = base64ToBytes(stored);
-  if (bytes.length === len) {
-    return bytes;
-  }
-  var out = new Uint8Array(len);
-  for (var i = 0; i < out.length; i++) {
-    out[i] = 0xFF;
-  }
-  out.set(bytes.subarray(0, Math.min(bytes.length, len)));
-  return out;
-}
-
-function saveSramChunk(bank, offset, totalSize, payload) {
-  if (!romMeta || !romMeta.sha1) {
-    return;
-  }
-  var bytes = payloadToBytes(payload);
-  var metaKey = sramKey(['meta']);
-  localStorage.setItem(metaKey, JSON.stringify({
-    size: totalSize || 0,
-    chunkSize: MSG_CHUNK
-  }));
-
-  var key = sramKey(['bank', bank, 'chunk', Math.floor(offset / MSG_CHUNK)]);
-  if (isAllFF(bytes)) {
-    localStorage.removeItem(key);
-  } else {
-    localStorage.setItem(key, bytesToBase64(bytes));
-  }
-}
-
-function sendSramLoad(bank, requestSize) {
-  ensureRom(function(err) {
-    if (err) {
-      sendError(err);
-      return;
-    }
-    var size = requestSize || SRAM_PAGE_SIZE;
-    var messages = [];
-    for (var off = 0; off < size; off += MSG_CHUNK) {
-      var len = Math.min(MSG_CHUNK, size - off);
-      messages.push({
-        PB_CMD: CMD.SRAM_LOAD_DATA,
-        PB_BANK: bank,
-        PB_OFFSET: off,
-        PB_DATA: Array.prototype.slice.call(loadSramChunk(bank, off, len))
-      });
-    }
-    console.log('pebbleboy: SRAM load bank ' + bank + ' size=' + size);
-    sendQueue(messages);
-  });
-}
-
 function bytesFromFetchText(text) {
   var clean = String(text).replace(/\s+/g, '');
   if (clean.length >= 4 && clean.length % 4 === 0 &&
@@ -642,7 +538,6 @@ function sendInfo() {
       PB_SIZE: romMeta.size,
       PB_TITLE: romMeta.title,
       PB_CART_TYPE: romMeta.cartType,
-      PB_SHA1: romMeta.sha1,
       PB_CRC32: romMeta.crc32,
       PB_AUDIO: cfg.audioEnabled ? 1 : 0,
       PB_SCALE: cfg.scaleMode === 'fullscreen' ? 1 : (cfg.scaleMode === 'fit' ? 2 : 0)
@@ -722,68 +617,10 @@ function selectRom(index) {
   sendInfo();
 }
 
-function sendBank(bank, bankOffset, requestSize) {
-  ensureRom(function(err) {
-    if (err) {
-      sendError(err);
-      return;
-    }
-    bankOffset = bankOffset || 0;
-    requestSize = requestSize || BANK_SIZE;
-    var start = bank * BANK_SIZE + bankOffset;
-    if (start >= romBytes.length) {
-      sendError('bank outside ROM');
-      return;
-    }
-    var size = Math.min(requestSize, BANK_SIZE - bankOffset, romBytes.length - start);
-    console.log('pebbleboy: bank request ' + bank + ' offset=' + bankOffset + ' size=' + size);
-    if (size <= MSG_CHUNK) {
-      sendQueue([{
-        PB_CMD: CMD.ROM_BANK_END,
-        PB_BANK: bank,
-        PB_OFFSET: bankOffset,
-        PB_SIZE: size,
-        PB_DATA: Array.prototype.slice.call(romBytes.subarray(start, start + size))
-      }]);
-      return;
-    }
-
-    var messages = [{
-      PB_CMD: CMD.ROM_BANK_BEGIN,
-      PB_BANK: bank,
-      PB_OFFSET: bankOffset,
-      PB_SIZE: size
-    }];
-    for (var off = 0; off < size; off += MSG_CHUNK) {
-      var end = Math.min(off + MSG_CHUNK, size);
-      messages.push({
-        PB_CMD: CMD.ROM_BANK_DATA,
-        PB_BANK: bank,
-        PB_OFFSET: bankOffset + off,
-        PB_DATA: Array.prototype.slice.call(romBytes.subarray(start + off, start + end))
-      });
-    }
-    messages.push({
-      PB_CMD: CMD.ROM_BANK_END,
-      PB_BANK: bank,
-      PB_OFFSET: bankOffset,
-      PB_SIZE: size,
-      PB_SHA1: romMeta.sha1
-    });
-    sendQueue(messages);
-  });
-}
-
 Pebble.addEventListener('appmessage', function(e) {
   var p = e.payload;
   if (p.PB_CMD === CMD.ROM_INFO_REQUEST) {
     sendInfo();
-  } else if (p.PB_CMD === CMD.ROM_BANK_REQUEST) {
-    sendBank(p.PB_BANK | 0, p.PB_OFFSET | 0, p.PB_SIZE | 0);
-  } else if (p.PB_CMD === CMD.SRAM_LOAD_REQUEST) {
-    sendSramLoad(p.PB_BANK | 0, p.PB_SIZE | 0);
-  } else if (p.PB_CMD === CMD.SRAM_SAVE) {
-    saveSramChunk(p.PB_BANK | 0, p.PB_OFFSET | 0, p.PB_SRAM_SIZE | 0, p.PB_DATA);
   } else if (p.PB_CMD === CMD.ROM_LIST_REQUEST) {
     sendRomList();
   } else if (p.PB_CMD === CMD.ROM_SELECT) {
