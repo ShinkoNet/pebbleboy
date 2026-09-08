@@ -34,7 +34,14 @@
       "watchface": false
     },
     "resources": {
-      "media": []
+      "media": [
+        {
+          "type": "bitmap",
+          "name": "PEBBLEBOY_ICON",
+          "file": "images/pebbleboy.png",
+          "menuIcon": true
+        }
+      ]
     }
   }
 }

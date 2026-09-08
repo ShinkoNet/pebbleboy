@@ -83,6 +83,7 @@ trap cleanup EXIT HUP INT TERM
 
 cp -a -- "$repo_dir/package.json" "$repo_dir/wscript" "$repo_dir/src" "$temp_dir/"
 mkdir -p -- "$temp_dir/resources/data"
+cp -a -- "$repo_dir/resources/images" "$temp_dir/resources/"
 install -m 0644 -- "$rom_path" "$temp_dir/resources/data/cartridge.gb"
 
 build_env=(PEBBLEBOY_EMBED_ROM=1)
