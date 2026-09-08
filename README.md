@@ -15,20 +15,17 @@ provide ROM images that you are legally entitled to use.
 
 Pebbleboy has one emulator build and two ways to deliver a ROM:
 
-| Package | ROM delivery | Firmware today | Audio | ROM cache |
+| Package | ROM delivery | Firmware |
 | --- | --- | --- | --- | --- |
-| Loader/ROM chooser | Configure a URL; the phone downloads the selected ROM once and installs it into watch flash | Pebbleboy CFW | Yes | 24 KiB |
-| Personal preloaded PBW | Run the Linux build script with a ROM from your own filesystem | Pebbleboy CFW | Yes | 24 KiB |
+| Loader/ROM chooser | Configure a URL; the phone downloads the selected ROM once and installs it into watch flash | Pebbleboy CFW |
+| Personal preloaded PBW | Run the Linux build script with a ROM from your own filesystem | Pebbleboy CFW |
 
 Both use the same 192-line cache. CFW is currently required for the app-blob
-API and speaker fixes. If those changes land upstream, the same performance
-profile can target official firmware without maintaining a reduced-cache
-build.
+API and speaker fixes.
 
 About audio: Only Pebble Time 2 and Pebble 2 Duo have speakers. The CFW includes
-speaker and scheduler fixes that are planned for upstream submission. Audio
-currently works under my sideloaded firmware and can move to official firmware
-if equivalent support lands upstream.
+speaker and scheduler fixes that I've submitted a PR for currently. You might be able to run
+non-CFW builds if you package your own preloaded PBW in the future, if they are added upstream.
 
 ## Install and configure
 
@@ -121,9 +118,7 @@ Fast-forward pauses audio until normal speed is restored.
 
 ## Build
 
-You need official Pebble SDK 4.33 or newer. SDK 4.33 expands the permitted
-Emery app binary to 128 KiB, leaving room to optimize hot emulator code for
-speed without allocating more runtime heap. To build the universal CFW loader:
+You need official Pebble SDK 4.33 or newer. To build the universal CFW loader:
 
 ```sh
 pebble build
