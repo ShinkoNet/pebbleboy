@@ -2,11 +2,10 @@
 
 ![Pebbleboy pixel-art Game Boy icon](resources/images/pebbleboy-phone.png)
 
-Pebbleboy is a Game Boy and Game Boy Color emulator for Pebble Time 2 and
-Pebble 2 Duo. It uses Peanut-GB for the CPU and LCD core and can use a native
-16 kHz/16-bit PCM mixer on speaker-equipped watches. The emulator requires the
-128 KiB app region on these models, so Pebbleboy only works on Pebble Time 2
-and Pebble 2 Duo. Pebble 2 Duo runs GBC games with monochrome output.
+Pebbleboy is a Game Boy and Game Boy Color emulator for Pebble Time 2.
+It uses Peanut-GB for the CPU and LCD core, a native 16 kHz/16-bit PCM mixer
+for audio, and the touchscreen for directional controls. Pebble Time 2 is
+the only supported watch.
 
 Pebbleboy does not contain or distribute commercial Game Boy ROMs. You must
 provide ROM images that you are legally entitled to use.
@@ -40,7 +39,7 @@ Both use the same 192-line cache. The loader requires
 [Pebbleboy CFW](https://github.com/ShinkoNet/PebbleOS/releases) for the app-blob
 API and speaker fixes. Personal preloaded PBWs run on stock firmware with sound disabled.
 
-About audio: Only Pebble Time 2 and Pebble 2 Duo have speakers. The [CFW](https://github.com/ShinkoNet/PebbleOS/releases) includes
+About audio: The [CFW](https://github.com/ShinkoNet/PebbleOS/releases) includes
 speaker and scheduler fixes submitted in [audio PR #2039](https://github.com/coredevices/PebbleOS/pull/2039). Preloaded PBWs keep sound disabled until the required audio fixes land upstream.
 
 ## Install and configure
