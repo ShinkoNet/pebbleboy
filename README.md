@@ -18,7 +18,7 @@ Pebbleboy has one emulator build and two ways to deliver a ROM:
 | Package | ROM delivery | Firmware |
 | --- | --- | --- |
 | Loader/ROM chooser | Configure a URL; the phone downloads the selected ROM once and installs it into watch flash | [Pebbleboy CFW](https://github.com/ShinkoNet/PebbleOS/releases) |
-| Personal preloaded PBW | Run the Linux build script with a ROM from your own filesystem | [Pebbleboy CFW](https://github.com/ShinkoNet/PebbleOS/releases) |
+| Personal preloaded PBW | Run the Linux build script with a ROM from your own filesystem | Stock Firmware (no sound rn) |
 
 Both use the same 192-line cache. [Pebbleboy CFW](https://github.com/ShinkoNet/PebbleOS/releases) is currently required for the app-blob
 API and speaker fixes.
