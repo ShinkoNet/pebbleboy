@@ -1,5 +1,7 @@
 # Pebbleboy
 
+![Pebbleboy pixel-art Game Boy icon](resources/images/pebbleboy-phone.png)
+
 Pebbleboy is a Game Boy and Game Boy Color emulator for Pebble Time 2 and
 Pebble 2 Duo. It uses Peanut-GB for the CPU and LCD core and can use a native
 16 kHz/16-bit PCM mixer on speaker-equipped watches. The emulator requires the
