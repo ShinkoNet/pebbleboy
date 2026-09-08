@@ -11,6 +11,22 @@ and Pebble 2 Duo. Pebble 2 Duo runs GBC games with monochrome output.
 Pebbleboy does not contain or distribute commercial Game Boy ROMs. You must
 provide ROM images that you are legally entitled to use.
 
+## Controls
+
+During a game:
+
+| Pebble input | Game Boy input |
+| --- | --- |
+| Select button | A |
+| Down button | B |
+| Up button | Start |
+| Back click | Select |
+| Touchscreen direction | D-pad |
+
+To toggle best-effort 2× fast-forward, press the Game Boy Start+Select twice
+within one second (hold the watch's Up button and double-click Back).
+Fast-forward pauses audio until normal speed is restored.
+
 ## Release types
 
 Pebbleboy has one emulator build and two ways to deliver a ROM:
@@ -98,22 +114,6 @@ loading your ROM into it.
 The current Time 2 speaker API accepts Pebbleboy's mono signed 16 kHz/16-bit
 PCM format. Disabling audio reduces CPU load so it might improve performance,
 but most issues are just a bottleneck from the flash or screen scaling.
-
-## Controls
-
-During a game:
-
-| Pebble input | Game Boy input |
-| --- | --- |
-| Select button | A |
-| Down button | B |
-| Up button | Start |
-| Back click | Select |
-| Touchscreen direction | D-pad |
-
-To toggle best-effort 2× fast-forward, press the Game Boy Start+Select twice
-within one second (hold the watch's Up button and double-click Back).
-Fast-forward pauses audio until normal speed is restored.
 
 ## Build
 
