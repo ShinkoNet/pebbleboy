@@ -10,7 +10,11 @@ var CMD = {
   ROM_INSTALL_DATA: 40,
   ROM_INSTALL_ACK: 41,
   ROM_INSTALL_END: 42,
-  ROM_INSTALL_DONE: 43
+  ROM_INSTALL_DONE: 43,
+  ROM_LAUNCH: 44,
+  SETTINGS_OPEN: 45,
+  SETTINGS_CLOSE: 46,
+  ROM_LIST_LAUNCH: 47
 };
 
 var BANK_SIZE = 16 * 1024;
@@ -23,12 +27,14 @@ var MAX_ROM_SIZE = 8 * 1024 * 1024;
 var MAX_ROM_LIBRARY = 12;
 var MAX_SEND_RETRIES = 5;
 var ROM_INFO_COALESCE_MS = 5000;
-var CONFIG_URL = 'https://ptv.netcavy.net/gb/?v=2';
+var CONFIG_URL = 'https://ptv.netcavy.net/gb/?v=10';
 var romBytes = null;
 var romMeta = null;
 var appMessageQueue = [];
 var appMessageBusy = false;
 var romLoading = false;
+var romInstalling = false;
+var lastInstallMessage = 0;
 var romLoadUrl = null;
 var romLoadCallbacks = [];
 var romInfoPending = false;
@@ -44,11 +50,15 @@ function normalizeRomLibrary(value) {
   for (var i = 0; i < value.length && out.length < MAX_ROM_LIBRARY; i++) {
     var item = value[i] || {};
     var url = String(item.url || '').trim();
-    if (!url) {
+    if (!url || url.length > 2048) {
       continue;
     }
     var name = String(item.name || '').trim();
+    var id = /^[A-Za-z0-9_-]{1,64}$/.test(item.id || '') && ['__proto__','constructor','prototype'].indexOf(item.id)<0 ? item.id : 'rom-' + i + '-' + String(url.length);
+    if (out.some(function(row) {return row.id === id;})) id += '-' + i;
     out.push({
+      id: id,
+      saveSlot: item.saveSlot !== false,
       name: (name || ('ROM ' + (out.length + 1))).slice(0, 32),
       url: url
     });
@@ -69,7 +79,7 @@ function romLibrary() {
 
   // Transparently preserve configurations made by pre-library builds.
   var legacyUrl = localStorage.getItem('romUrl') || '';
-  return legacyUrl ? [{ name: 'ROM 1', url: legacyUrl }] : [];
+  return legacyUrl ? normalizeRomLibrary([{name:'ROM 1',url:legacyUrl}]) : [];
 }
 
 function activeRomIndex(library) {
@@ -510,9 +520,9 @@ function ensureRom(cb) {
   });
 }
 
-function sendInfo() {
+function sendInfo(launch) {
   var requestedUrl = settings().romUrl;
-  if (romInfoPending && romInfoPendingUrl === requestedUrl) {
+  if (!launch && romInfoPending && romInfoPendingUrl === requestedUrl) {
     console.log('pebbleboy: coalesced duplicate ROM info request');
     return;
   }
@@ -533,8 +543,19 @@ function sendInfo() {
       return;
     }
     var cfg = settings();
+    try {
+      var ramSizes = [0,2048,8192,32768,131072,65536];
+      var ramSize = romBytes[0x147] === 5 || romBytes[0x147] === 6 ? 512 : ramSizes[romBytes[0x149]];
+      saves.bind(cfg.romLibrary[cfg.activeRomIndex], romMeta, ramSize);
+    } catch (saveError) {
+      clearPendingInfo();
+      sendError(String(saveError.message || saveError));
+      return;
+    }
+    romInstalling = true;
+    lastInstallMessage = Date.now();
     Pebble.sendAppMessage({
-      PB_CMD: CMD.ROM_INFO,
+      PB_CMD: launch ? CMD.ROM_LAUNCH : CMD.ROM_INFO,
       PB_SIZE: romMeta.size,
       PB_TITLE: romMeta.title,
       PB_CART_TYPE: romMeta.cartType,
@@ -543,8 +564,10 @@ function sendInfo() {
       PB_SCALE: cfg.scaleMode === 'fullscreen' ? 1 : (cfg.scaleMode === 'fit' ? 2 : 0)
     }, function() {
       setTimeout(clearPendingInfo, ROM_INFO_COALESCE_MS);
+      setTimeout(saves.poll, 250);
     }, function() {
       clearPendingInfo();
+      romInstalling = false;
       console.log('pebbleboy: info send failed');
     });
     console.log('pebbleboy: ROM info ' + romMeta.title + ' size=' + romMeta.size);
@@ -580,9 +603,9 @@ function sendInstallAtOffset(offset) {
   });
 }
 
-function sendRomList() {
+function sendRomList(launch) {
   var library = romLibrary();
-  var messages = [{ PB_CMD: CMD.ROM_LIST_BEGIN, PB_SIZE: library.length }];
+  var messages = [{ PB_CMD: launch ? CMD.ROM_LIST_LAUNCH : CMD.ROM_LIST_BEGIN, PB_SIZE: library.length }];
   for (var i = 0; i < library.length; i++) {
     messages.push({
       PB_CMD: CMD.ROM_LIST_ITEM,
@@ -596,6 +619,8 @@ function sendRomList() {
 }
 
 function selectRom(index) {
+  saves.cancel();
+  romInstalling = false;
   var library = romLibrary();
   if (index < 0 || index >= library.length) {
     sendError('ROM selection invalid');
@@ -619,6 +644,7 @@ function selectRom(index) {
 
 Pebble.addEventListener('appmessage', function(e) {
   var p = e.payload;
+  if (p.PB_CMD >= 50 && p.PB_CMD <= 59) { saves.handle(p); return; }
   if (p.PB_CMD === CMD.ROM_INFO_REQUEST) {
     sendInfo();
   } else if (p.PB_CMD === CMD.ROM_LIST_REQUEST) {
@@ -626,35 +652,61 @@ Pebble.addEventListener('appmessage', function(e) {
   } else if (p.PB_CMD === CMD.ROM_SELECT) {
     selectRom(p.PB_BANK | 0);
   } else if (p.PB_CMD === CMD.ROM_INSTALL_ACK) {
+    romInstalling = true;
+    lastInstallMessage = Date.now();
+    saves.cancel();
     sendInstallAtOffset(p.PB_OFFSET);
   } else if (p.PB_CMD === CMD.ROM_INSTALL_DONE) {
     console.log('pebbleboy: ROM installed and verified on watch');
+    romInstalling = false;
+    saves.romReady();
   }
 });
 
 Pebble.addEventListener('ready', function() {
   console.log('pebbleboy phone service ready');
+  setTimeout(saves.poll, 10000);
+  setInterval(saves.poll, 60000);
 });
 
-function configUrl() {
+var saves = require('./saves')({
+  toBase64:bytesToBase64, fromBase64:base64ToBytes, crc32:crc32,
+  roms:romLibrary,
+  idle:function() { return !romLoading && (!romInstalling || Date.now()-lastInstallMessage>30000) && !appMessageBusy && !appMessageQueue.length; },
+  openPage:function(extra) { Pebble.openURL(configUrl(extra)); }
+});
+
+function configUrl(extra) {
   var cfg = settings();
   return CONFIG_URL + '#' + encodeURIComponent(JSON.stringify({
     roms: cfg.romLibrary,
     scaleMode: cfg.scaleMode,
-    audio: cfg.audioEnabled
+    audio: cfg.audioEnabled,
+    saveManager:saves.describe(true),
+    exportSave:extra && extra.exportSave
   }));
 }
 
 Pebble.addEventListener('showConfiguration', function() {
-  Pebble.openURL(configUrl());
+  Pebble.sendAppMessage({PB_CMD:CMD.SETTINGS_OPEN},saves.settingsPage,saves.settingsPage);
 });
 
 Pebble.addEventListener('webviewclosed', function(e) {
+  Pebble.sendAppMessage({PB_CMD:CMD.SETTINGS_CLOSE},function(){},function(){});
   if (!e.response) {
     return;
   }
   try {
-    var cfg = JSON.parse(decodeURIComponent(e.response));
+    // Allow one 32 KiB base64 save plus its action wrapper, fully escaped.
+    // Reject oversized webview responses before decoding or parsing them.
+    if (e.response.length > (Math.ceil(32 * 1024 / 3) * 4 + 32768) * 3) throw Error('Configuration response too large');
+    var response = e.response;
+    try {JSON.parse(response);} catch (_) {response=decodeURIComponent(response);}
+    if (response.length > Math.ceil(32 * 1024 / 3) * 4 + 32768) throw Error('Configuration response too large');
+    var cfg=JSON.parse(response);
+    if (cfg.launch===true) saves.cancel();
+    if (saves.busy() && (!cfg.saveAction || cfg.saveAction.action !== "import")) throw Error("Save sync in progress");
+    if (cfg.saveAction && !cfg.roms) { saves.action(cfg.saveAction); return; }
     var oldSettings = settings();
     var library = normalizeRomLibrary(cfg.roms);
     var nextActiveIndex = 0;
@@ -678,7 +730,12 @@ Pebble.addEventListener('webviewclosed', function(e) {
                          (cfg.scaleMode === 'fullscreen' || cfg.scaleMode === 'fit') ?
                          cfg.scaleMode : '1x');
     localStorage.setItem('audioEnabled', cfg.audio === false ? '0' : '1');
+    if (cfg.saveAction) saves.action(cfg.saveAction);
+    else if (cfg.launch===true) {
+      console.log("pebbleboy: Save and launch");
+      sendRomList(true);
+    } else saves.poll();
   } catch (err) {
-    console.log('pebbleboy: bad config response');
+    console.log('pebbleboy: bad config response: '+String(err.message || err));
   }
 });

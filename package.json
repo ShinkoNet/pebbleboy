@@ -25,7 +25,10 @@
       "PB_STATUS",
       "PB_AUDIO",
       "PB_SCALE",
-      "PB_CRC32"
+      "PB_CRC32",
+      "PB_ROM_ID",
+      "PB_SAVE_TIME",
+      "PB_SAVE_FILLED"
     ],
     "targetPlatforms": [
       "emery"

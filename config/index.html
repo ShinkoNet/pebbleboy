@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
   <title>Pebbleboy settings</title>
   <style>
     :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -10,129 +11,56 @@
     body { margin: 0; background: #f6f7f9; color: #111827; }
     main { max-width: 620px; margin: 0 auto; padding: 18px; }
     h1 { margin: 0 0 4px; font-size: 24px; }
-    .intro, .hint { color: #4b5563; line-height: 1.45; }
-    .intro { margin: 0 0 18px; font-size: 14px; }
-    .hint { margin: 8px 0 0; font-size: 12px; }
+    h2 { font-size: 18px; }
+    .hint { margin: 8px 0; color: #4b5563; font-size: 12px; line-height: 1.45; }
     label { display: block; margin: 16px 0 6px; font-size: 13px; font-weight: 650; }
     input[type="url"], input[type="text"], select {
       width: 100%; padding: 12px; border: 1px solid #c9ced6; border-radius: 7px;
       background: white; color: #111827; font: inherit;
     }
-    .rom { margin: 10px 0; padding: 11px; border: 1px solid #d8dce2; border-radius: 9px; background: white; }
+    .rom { margin: 10px 0; padding: 12px; border: 1px solid #d8dce2; border-radius: 9px; background: white; }
     .rom input + input { margin-top: 8px; }
-    button { width: 100%; padding: 12px; border: 0; border-radius: 7px; font: inherit; font-weight: 650; }
-    .add, .remove { background: #e5e7eb; color: #111827; }
-    .remove { margin-top: 8px; color: #991b1b; }
-    .save { margin-top: 20px; background: #111827; color: white; }
+    button, .download { padding: 12px; border: 0; border-radius: 7px; font: inherit; font-weight: 650; }
+    button { width: 100%; background: #e5e7eb; color: #111827; cursor: pointer; }
+    button:disabled { opacity: .45; cursor: default; }
+    .remove { margin-top: 12px; background: transparent; color: #991b1b; padding: 6px; font-size: 13px; }
+    .actions { display: flex; gap: 8px; }
+    .actions button { flex: 1; }
+    .slot { border-top: 1px solid #d8dce2; margin-top: 12px; padding-top: 12px; }
+    .slot p { margin-top: 0; }
+    .apply { margin-top: 20px; background: #111827; color: white; }
     .row { display: flex; gap: 10px; align-items: center; margin: 16px 0; }
     .row label { margin: 0; }
-    .legal { margin-top: 20px; padding-top: 14px; border-top: 1px solid #d8dce2; }
+    [hidden] { display: none !important; }
+    .download { display: block; background: #111827; color: white; text-align: center; text-decoration: none; margin: 12px 0; }
+    #feedback { font-size: 13px; color: #4b5563; }
   </style>
 </head>
 <body>
   <main>
     <h1>Pebbleboy</h1>
-    <p class="intro">Build a private library from direct links to Game Boy ROMs you are legally entitled to use.</p>
-
-    <label>ROM library</label>
-    <div id="roms"></div>
-    <button type="button" class="add" id="add">+ Add ROM</button>
-    <p class="hint">Direct-download .gb files and raw text containing base64 are supported. Maximum 12 entries and 4 MB per ROM.</p>
-
-    <label for="scale">Display scale</label>
-    <select id="scale">
-      <option value="1x">1:1 centered</option>
-      <option value="fullscreen">Fill screen</option>
-      <option value="fit">Aspect fit</option>
-    </select>
-
-    <div class="row">
-      <input id="audio" type="checkbox">
-      <label for="audio">Enable speaker audio</label>
-    </div>
-    <div class="row">
-      <input id="clear" type="checkbox">
-      <label for="clear">Clear downloaded ROM cache</label>
-    </div>
-
-    <button type="button" class="save" id="save">Save</button>
-    <p class="hint legal">ROM names and URLs arrive in the URL fragment, which is not sent to this web server. Pebbleboy stores them locally in the companion app.</p>
+    <p id="feedback" role="status" aria-live="polite"></p>
+    <section id="settings-fields">
+      <label>ROM library</label>
+      <div id="roms"></div>
+      <button type="button" id="add">+ Add ROM</button>
+      <p class="hint">ROM URLs: .gb / .gbc, up to 8 MiB. Saves: .sav, up to 32 KiB.</p>
+      <label for="scale">Display scale</label>
+      <select id="scale">
+        <option value="1x">1:1 centered</option>
+        <option value="fullscreen">Fill screen</option>
+        <option value="fit">Aspect fit</option>
+      </select>
+      <div class="row">
+        <input id="audio" type="checkbox"><label for="audio">Enable speaker audio</label>
+      </div>
+      <div class="row">
+        <input id="clear" type="checkbox"><label for="clear">Clear downloaded ROM cache</label>
+      </div>
+      <button type="button" class="apply" id="save">Save and launch</button>
+    </section>
+    <section id="export" hidden></section>
   </main>
-
-  <script>
-    'use strict';
-    var MAX_ROMS = 12;
-    var roms = document.getElementById('roms');
-
-    function addRom(item) {
-      if (roms.children.length >= MAX_ROMS) return;
-      item = item || {};
-      var row = document.createElement('div');
-      row.className = 'rom';
-
-      var name = document.createElement('input');
-      name.className = 'name';
-      name.type = 'text';
-      name.maxLength = 32;
-      name.placeholder = 'Game name';
-      name.value = String(item.name || '');
-
-      var url = document.createElement('input');
-      url.className = 'url';
-      url.type = 'url';
-      url.inputMode = 'url';
-      url.placeholder = 'https://example.invalid/game.gb';
-      url.value = String(item.url || '');
-
-      var remove = document.createElement('button');
-      remove.type = 'button';
-      remove.className = 'remove';
-      remove.textContent = 'Remove';
-      remove.addEventListener('click', function() { row.parentNode.removeChild(row); });
-
-      row.appendChild(name);
-      row.appendChild(url);
-      row.appendChild(remove);
-      roms.appendChild(row);
-    }
-
-    function initialSettings() {
-      try {
-        return JSON.parse(decodeURIComponent(location.hash.slice(1))) || {};
-      } catch (err) {
-        return {};
-      }
-    }
-
-    function save() {
-      var library = [];
-      var rows = document.querySelectorAll('.rom');
-      for (var i = 0; i < rows.length; i++) {
-        var url = rows[i].querySelector('.url').value.trim();
-        if (url) {
-          library.push({
-            name: rows[i].querySelector('.name').value.trim(),
-            url: url
-          });
-        }
-      }
-      location.href = 'pebblejs://close#' + encodeURIComponent(JSON.stringify({
-        roms: library,
-        scaleMode: document.getElementById('scale').value,
-        audio: document.getElementById('audio').checked,
-        clear: document.getElementById('clear').checked
-      }));
-    }
-
-    var cfg = initialSettings();
-    var library = cfg.roms instanceof Array ? cfg.roms.slice(0, MAX_ROMS) : [];
-    for (var i = 0; i < library.length; i++) addRom(library[i]);
-    if (!library.length) addRom();
-    document.getElementById('scale').value =
-      cfg.scaleMode === 'fullscreen' || cfg.scaleMode === 'fit' ? cfg.scaleMode : '1x';
-    document.getElementById('audio').checked = cfg.audio === true;
-    document.getElementById('add').addEventListener('click', function() { addRom(); });
-    document.getElementById('save').addEventListener('click', save);
-  </script>
+  <script src="saves.js?v=8"></script>
 </body>
 </html>

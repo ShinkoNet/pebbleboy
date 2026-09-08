@@ -4,6 +4,9 @@
 
 #include <pebble.h>
 
+extern uint32_t MESSAGE_KEY_PB_SAVE_TIME;
+extern uint32_t MESSAGE_KEY_PB_SAVE_FILLED;
+extern uint32_t MESSAGE_KEY_PB_ROM_ID;
 extern uint32_t MESSAGE_KEY_PB_CMD;
 extern uint32_t MESSAGE_KEY_PB_BANK;
 extern uint32_t MESSAGE_KEY_PB_OFFSET;
@@ -15,9 +18,8 @@ extern uint32_t MESSAGE_KEY_PB_STATUS;
 extern uint32_t MESSAGE_KEY_PB_CRC32;
 
 #define INSTALL_REPLY_MAX_RETRIES 5u
-/* Pebble's generated C table omits phone-info-only settings keys. */
-#define MESSAGE_KEY_PB_AUDIO_FALLBACK 10010u
-#define MESSAGE_KEY_PB_SCALE_FALLBACK 10011u
+extern uint32_t MESSAGE_KEY_PB_AUDIO;
+extern uint32_t MESSAGE_KEY_PB_SCALE;
 
 static PbPhoneEventCb s_event_cb;
 static void *s_event_context;
@@ -110,6 +112,30 @@ bool gb_phone_install_done(void) {
   return prv_send_install_status(PB_CMD_ROM_INSTALL_DONE, 0);
 }
 
+bool gb_phone_save_send(uint8_t cmd, uint32_t token, uint32_t offset,
+                        uint32_t size, uint32_t crc, const char *id,
+                        const char *title, const void *data, size_t length,
+                        uint64_t updated_at, bool filled) {
+  if (s_install_reply.active || length > 256) return false;
+  DictionaryIterator *out;
+  if (app_message_outbox_begin(&out) != APP_MSG_OK) return false;
+  dict_write_uint8(out, MESSAGE_KEY_PB_CMD, cmd);
+  dict_write_uint32(out, MESSAGE_KEY_PB_BANK, token);
+  dict_write_uint32(out, MESSAGE_KEY_PB_OFFSET, offset);
+  dict_write_uint32(out, MESSAGE_KEY_PB_SIZE, size);
+  dict_write_uint32(out, MESSAGE_KEY_PB_CRC32, crc);
+  if (cmd == PB_CMD_SAVE_INFO) {
+    uint8_t stamp[8];
+    for (unsigned i=0;i<8;++i) stamp[i]=(uint8_t)(updated_at>>(8*i));
+    dict_write_data(out, MESSAGE_KEY_PB_SAVE_TIME, stamp, sizeof(stamp));
+    dict_write_uint8(out, MESSAGE_KEY_PB_SAVE_FILLED, filled ? 1 : 0);
+  }
+  if (id) dict_write_cstring(out, MESSAGE_KEY_PB_ROM_ID, id);
+  if (title) dict_write_cstring(out, MESSAGE_KEY_PB_TITLE, title);
+  if (data && length) dict_write_data(out, MESSAGE_KEY_PB_DATA, data, length);
+  return app_message_outbox_send() == APP_MSG_OK;
+}
+
 static void prv_inbox_received(DictionaryIterator *iter, void *context) {
   (void)context;
   Tuple *cmd = dict_find(iter, MESSAGE_KEY_PB_CMD);
@@ -120,10 +146,45 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
   PbPhoneEvent event;
   memset(&event, 0, sizeof(event));
 
+  if (cmd->value->uint8 >= PB_CMD_SAVE_REQUEST && cmd->value->uint8 <= PB_CMD_SAVE_ERROR) {
+    Tuple *stamp = dict_find(iter, MESSAGE_KEY_PB_SAVE_TIME);
+    Tuple *token = dict_find(iter, MESSAGE_KEY_PB_BANK);
+    Tuple *offset = dict_find(iter, MESSAGE_KEY_PB_OFFSET);
+    Tuple *size = dict_find(iter, MESSAGE_KEY_PB_SIZE);
+    Tuple *crc = dict_find(iter, MESSAGE_KEY_PB_CRC32);
+    Tuple *id = dict_find(iter, MESSAGE_KEY_PB_ROM_ID);
+    Tuple *data = dict_find(iter, MESSAGE_KEY_PB_DATA);
+    if ((stamp && (stamp->type != TUPLE_BYTE_ARRAY || stamp->length != 8)) ||
+        !token || token->length != 4 ||
+        (offset && offset->length != 4) || (size && size->length != 4) ||
+        (crc && crc->length != 4) ||
+        (id && (id->type != TUPLE_CSTRING || id->length != sizeof(event.rom_id) ||
+                id->value->cstring[sizeof(event.rom_id)-1] != '\0')) ||
+        (data && (data->type != TUPLE_BYTE_ARRAY || data->length > 256))) return;
+    if (stamp) for (unsigned i=0;i<8;++i) event.updated_at |= (uint64_t)stamp->value->data[i] << (8*i);
+    event.type = PB_PHONE_EVENT_SAVE;
+    event.command = cmd->value->uint8;
+    event.bank = token->value->uint32;
+    event.offset = offset ? offset->value->uint32 : 0;
+    event.size = size ? size->value->uint32 : 0;
+    event.crc32 = crc ? crc->value->uint32 : 0;
+    if (id) memcpy(event.rom_id, id->value->cstring, sizeof(event.rom_id));
+    if (data) { event.data = data->value->data; event.data_len = data->length; }
+    prv_emit(&event);
+    return;
+  }
   switch (cmd->value->uint8) {
+    case PB_CMD_SETTINGS_OPEN:
+    case PB_CMD_SETTINGS_CLOSE:
+      event.type = PB_PHONE_EVENT_SETTINGS;
+      event.command = cmd->value->uint8;
+      prv_emit(&event);
+      break;
+    case PB_CMD_ROM_LIST_LAUNCH:
     case PB_CMD_ROM_LIST_BEGIN: {
       Tuple *size = dict_find(iter, MESSAGE_KEY_PB_SIZE);
       event.type = PB_PHONE_EVENT_ROM_LIST_BEGIN;
+      event.command = cmd->value->uint8;
       event.size = size ? size->value->uint32 : 0;
       prv_emit(&event);
       break;
@@ -149,17 +210,19 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
       prv_emit(&event);
       break;
     }
+    case PB_CMD_ROM_LAUNCH:
     case PB_CMD_ROM_INFO: {
       Tuple *size = dict_find(iter, MESSAGE_KEY_PB_SIZE);
       Tuple *title = dict_find(iter, MESSAGE_KEY_PB_TITLE);
       Tuple *cart_type = dict_find(iter, MESSAGE_KEY_PB_CART_TYPE);
-      Tuple *audio = dict_find(iter, MESSAGE_KEY_PB_AUDIO_FALLBACK);
-      Tuple *scale = dict_find(iter, MESSAGE_KEY_PB_SCALE_FALLBACK);
+      Tuple *audio = dict_find(iter, MESSAGE_KEY_PB_AUDIO);
+      Tuple *scale = dict_find(iter, MESSAGE_KEY_PB_SCALE);
       Tuple *crc32 = dict_find(iter, MESSAGE_KEY_PB_CRC32);
       if (!size) {
         return;
       }
       event.type = PB_PHONE_EVENT_INFO;
+      event.command = cmd->value->uint8;
       event.size = size->value->uint32;
       event.cart_type = cart_type ? cart_type->value->uint8 : 0;
       event.crc32 = crc32 ? crc32->value->uint32 : 0;
@@ -240,9 +303,8 @@ void gb_phone_init(PbCart *cart, PbPhoneEventCb event_cb, void *context) {
   app_message_register_inbox_received(prv_inbox_received);
   app_message_register_outbox_sent(prv_outbox_sent);
   app_message_register_outbox_failed(prv_outbox_failed);
-  /* A ROM data message contains 512 bytes plus command and offset tuples.
-   * Outbound acknowledgements contain only a command and optional offset. */
-  app_message_open(600, 64);
+  /* Save replies carry one 256-byte page and transfer metadata. */
+  app_message_open(600, 600);
 }
 
 void gb_phone_deinit(void) {
