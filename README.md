@@ -16,21 +16,21 @@ provide ROM images that you are legally entitled to use.
 Pebbleboy has one emulator build and two ways to deliver a ROM:
 
 | Package | ROM delivery | Firmware |
-| --- | --- | --- | --- | --- |
-| Loader/ROM chooser | Configure a URL; the phone downloads the selected ROM once and installs it into watch flash | Pebbleboy CFW |
-| Personal preloaded PBW | Run the Linux build script with a ROM from your own filesystem | Pebbleboy CFW |
+| --- | --- | --- |
+| Loader/ROM chooser | Configure a URL; the phone downloads the selected ROM once and installs it into watch flash | [Pebbleboy CFW](https://github.com/ShinkoNet/PebbleOS/releases) |
+| Personal preloaded PBW | Run the Linux build script with a ROM from your own filesystem | [Pebbleboy CFW](https://github.com/ShinkoNet/PebbleOS/releases) |
 
-Both use the same 192-line cache. CFW is currently required for the app-blob
+Both use the same 192-line cache. [Pebbleboy CFW](https://github.com/ShinkoNet/PebbleOS/releases) is currently required for the app-blob
 API and speaker fixes.
 
-About audio: Only Pebble Time 2 and Pebble 2 Duo have speakers. The CFW includes
-speaker and scheduler fixes that I've submitted a PR for currently. You might be able to run
+About audio: Only Pebble Time 2 and Pebble 2 Duo have speakers. The [CFW](https://github.com/ShinkoNet/PebbleOS/releases) includes
+speaker and scheduler fixes submitted in [audio PR #2039](https://github.com/coredevices/PebbleOS/pull/2039). You might be able to run
 non-CFW builds if you package your own preloaded PBW in the future, if they are added upstream.
 
 ## Install and configure
 
 The file `Pebbleboy.pbw` in releases is the ROM-free CFW build and can be shared.
-**YOU WILL NEED TO SIDELOAD THE FIRMWARE TO RUN IT**
+**YOU WILL NEED TO [SIDELOAD THE FIRMWARE](https://github.com/ShinkoNet/PebbleOS/releases) TO RUN IT**
 
 CloudPebble and local SDK builds currently produce the same CFW-compatible
 application. Once the required firmware APIs are official, the compatibility
@@ -38,7 +38,7 @@ stamp and temporary veneers can be removed without changing the emulator cache.
 
 Anyway...
 
-1. Sideload the firmware and connect the watch to its companion phone.
+1. Sideload the [Pebbleboy CFW](https://github.com/ShinkoNet/PebbleOS/releases) and connect the watch to its companion phone.
 2. Open Pebbleboy's settings in the Pebble mobile app.
 3. Add one or more game names and direct-download ROM URLs (or base64 text URLs).
 4. Choose display scaling and whether speaker audio is enabled, then tap
@@ -70,7 +70,7 @@ Bluetooth connection; see [Loader ROMs and saves](#loader-roms-and-saves) below.
 ## Where large ROMs live
 
 In the loader build, the phone fetches the selected 32 KB–8 MB cartridge
-and transfers it in checked AppMessage chunks. I'm so sorry. CFW then stores it
+and transfers it in checked AppMessage chunks. I'm so sorry. [CFW](https://github.com/ShinkoNet/PebbleOS/releases) then stores it
 in a filesystem blob owned by Pebbleboy's UUID. This is a CFW-unique app-blob API
 to persist and read up to 8 MB from watch flash. The blob is committed only
 after its size and CRC32 verify so the transfer knows it got everything.
@@ -85,7 +85,7 @@ uses the same 24 KiB cache and reads ROM and SRAM from flash.
 ## Firmware and audio
 
 Prebuilt DVT and PVT firmware containing the app-blob API and speaker
-scheduling/DMA fixes is published from my
+scheduling/DMA fixes ([audio PR #2039](https://github.com/coredevices/PebbleOS/pull/2039)) is published from my
 [PebbleOS fork](https://github.com/ShinkoNet/PebbleOS/releases). The
 [firmware notes](https://github.com/ShinkoNet/PebbleOS/blob/main/PEBBLEBOY_FIRMWARE.md)
 explain hardware selection, sideload precautions, source patches, and the
@@ -144,6 +144,19 @@ For low-level development, the equivalent manual embedded-ROM environment is
 `PEBBLEBOY_EMBED_ROM=1 pebble build`, with the ROM at
 `resources/data/cartridge.gb`.
 
+## Loader ROMs and saves
+
+Each game can have its own save slot. Save in-game as usual; switching games
+keeps your saves, and saving works without your phone nearby. Saves sync with
+the phone when connected, using the most recent in-game save or import.
+
+- **Import:** Add a save slot and upload a matching `.sav` file (up to 32 KiB).
+  It replaces that game's save and loads when you launch the game.
+- **Export:** Choose **Export .sav**, copy the download link into Chrome or
+  Safari, then tap **Download .sav**.
+
+Export important saves before clearing phone app data or changing phones.
+
 ## Credits
 
 The emulator core is based on Peanut-GB by Mahyar Koshkouei and contains
@@ -156,53 +169,3 @@ Pebbleboy is distributed under the [MIT License](LICENSE). Third-party
 copyright and licence information is collected in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and retained in the relevant
 source files.
-
-## Loader ROMs and saves
-
-Each ROM library entry contains its URL and one optional active save slot. Add a
-slot to import or export a standard `.sav`. An empty slot cannot be exported;
-importing a file fills it immediately, even before the ROM has been downloaded.
-The loader validates the save against the actual cartridge RAM size when the ROM
-is fetched. Files must be non-empty `.sav` files, no larger than 32 KiB.
-
-Connected launches use the ROM library, selecting the ROM and its save together.
-The phone restores a newer save before the selected game begins emulation.
-Offline launches use the cached ROM and that game's persistent watch save.
-A normal connected launch automatically loads a one-game library, or shows a
-selection menu for multiple games. Settings can sync the cached game's save
-without starting emulation. These changes target the URL-based loader;
-prebuilt PBWs containing a ROM are outside the new sync workflow.
-
-Use the game's own save function and exit normally. The watch records an action
-timestamp when cartridge RAM is written. An import gets a new timestamp when the
-companion successfully stores it; file creation/modification dates are ignored.
-Syncing, exporting, opening settings, and acknowledging a transfer do not advance
-that timestamp. The newer action wins on reconnect; a timestamp tie with different
-contents favors a deliberate phone import. Once applied, the watch retains the
-import's action time, and subsequent game writes advance it again.
-
-The phone checks for changes while Pebbleboy is running and when settings opens.
-Imports into the open game sync automatically. Imports for other entries wait
-until that ROM is selected. The watch retains its save while away from the phone.
-A replacement is staged and checksum-verified before its bank is activated; an
-interrupted transfer leaves the active watch copy intact. The phone also retains
-an internal recovery copy before replacement. There is no custom export format
-or separate slot browser. Raw `.sav` imports preserve the watch's current game
-clock.
-
-ROM identity uses the SHA-1 of the complete ROM, rather than a filename or URL.
-Changing a URL does not attach an old save to different ROM content. Legacy
-checksum-keyed watch saves are copied into the new store without deleting the
-original keys. Old preview phone storage is also retained. Previously colliding
-header checksums cannot be retrospectively disambiguated; file size alone cannot
-prove that an imported save is compatible with a particular game revision.
-
-Save data remains in the watch and phone app. The static settings site receives
-no save payload over HTTP; the companion/webview bridge carries file data in URL
-fragments. To export, choose **Export .sav**, copy the browser download link, and paste it
-into Chrome or Safari. Tap **Download .sav** there; embedded phone WebViews may
-not support downloads or file sharing. The link contains the save in its URL
-fragment. Download important saves before clearing phone app data or changing
-phones. On-device save timestamps, phone sync, browser export, and import have
-been exercised on Pebble Time 2. Offline conflict handling and broader phone
-compatibility still need checking before the full release.
