@@ -11,8 +11,8 @@ Options:
   --output FILE       Output PBW path (default: dist/Pebbleboy-ROM.pbw).
   -h, --help          Show this help.
 
-The unified build supports ROMs up to 8 MiB and uses the 24 KiB cache and
-speaker audio. It currently requires Pebbleboy CFW until its APIs land upstream.
+The preloaded build runs on stock firmware with sound disabled. It supports
+ROMs up to 8 MiB and uses the 24 KiB cache. No CFW flag or custom SDK is needed.
 No ROM is copied into the Pebbleboy source tree or retained after the build.
 EOF
 }

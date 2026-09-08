@@ -48,17 +48,17 @@ def build(ctx):
     embedded = embed_local_rom()
     for platform in ctx.env.TARGET_PLATFORMS:
         ctx.env = ctx.all_envs[platform]
-        # Until the blob and speaker fixes land upstream, every build targets
-        # Pebbleboy CFW's ABI. The emulator memory/performance profile itself
-        # is unified and fits the standard 128 KiB app region.
-        ctx.env.SDK_VERSION_MINOR = 0x6b
-        ctx.env.append_unique('DEFINES', 'PEBBLEBOY_CFW_OFFICIAL_SDK_BRIDGE=1')
         ctx.env.append_value(
             'CFLAGS', '-I{}'.format(ctx.path.find_dir('src/c').abspath()))
         if embedded:
-            # Personal PBWs carry an immutable cartridge resource and do not
-            # need the runtime blob loader.
+            # Personal PBWs use stock resource APIs and never open a speaker
+            # stream, so retain the official SDK compatibility version.
             ctx.env.append_unique('DEFINES', 'PEBBLEBOY_EMBEDDED_ROM_BUILD=1')
+            ctx.env.append_unique('DEFINES', 'PEBBLEBOY_NO_AUDIO=1')
+        else:
+            # URL loading needs the CFW app-blob ABI and speaker fixes.
+            ctx.env.SDK_VERSION_MINOR = 0x6b
+            ctx.env.append_unique('DEFINES', 'PEBBLEBOY_CFW_OFFICIAL_SDK_BRIDGE=1')
         if embedded:
             # App resources live in Obelix's large PFS. This build-time limit
             # supports the complete 8 MiB expanded MBC5 cartridge format.

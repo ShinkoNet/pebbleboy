@@ -20,20 +20,19 @@ Pebbleboy has one emulator build and two ways to deliver a ROM:
 | Loader/ROM chooser | Configure a URL; the phone downloads the selected ROM once and installs it into watch flash | [Pebbleboy CFW](https://github.com/ShinkoNet/PebbleOS/releases) |
 | Personal preloaded PBW | Run the Linux build script with a ROM from your own filesystem | Stock Firmware (no sound rn) |
 
-Both use the same 192-line cache. [Pebbleboy CFW](https://github.com/ShinkoNet/PebbleOS/releases) is currently required for the app-blob
-API and speaker fixes.
+Both use the same 192-line cache. The loader requires
+[Pebbleboy CFW](https://github.com/ShinkoNet/PebbleOS/releases) for the app-blob
+API and speaker fixes. Personal preloaded PBWs run on stock firmware with sound disabled.
 
 About audio: Only Pebble Time 2 and Pebble 2 Duo have speakers. The [CFW](https://github.com/ShinkoNet/PebbleOS/releases) includes
-speaker and scheduler fixes submitted in [audio PR #2039](https://github.com/coredevices/PebbleOS/pull/2039). You might be able to run
-non-CFW builds if you package your own preloaded PBW in the future, if they are added upstream.
+speaker and scheduler fixes submitted in [audio PR #2039](https://github.com/coredevices/PebbleOS/pull/2039). Preloaded PBWs keep sound disabled until the required audio fixes land upstream.
 
 ## Install and configure
 
 The file `Pebbleboy.pbw` in releases is the ROM-free CFW build and can be shared.
-**YOU WILL NEED TO [SIDELOAD THE FIRMWARE](https://github.com/ShinkoNet/PebbleOS/releases) TO RUN IT**
+**THE LOADER REQUIRES [SIDELOADED FIRMWARE](https://github.com/ShinkoNet/PebbleOS/releases)**
 
-CloudPebble and local SDK builds currently produce the same CFW-compatible
-application. Once the required firmware APIs are official, the compatibility
+ROM-free CloudPebble and local SDK builds produce the CFW-compatible loader. Once the required firmware APIs are official, the compatibility
 stamp and temporary veneers can be removed without changing the emulator cache.
 
 Anyway...
@@ -134,8 +133,8 @@ The script uses the normally installed `pebble` command and active official SDK
 from `PATH`. It builds in a temporary directory and writes the finished PBW to
 `dist/` by default. Pass `--output FILE` to choose another destination.
 
-The unified target supports ROMs up to 8 MB, uses the 24 KiB cartridge cache,
-and includes audio.
+Personal preloaded PBWs support ROMs up to 8 MB and use the 24 KiB cartridge
+cache. They run on stock firmware with sound disabled; no CFW option is needed.
 
 Please ensure you are allowed to distribute the ROM you bundle with Pebbleboy
 if you plan to share your own release.
